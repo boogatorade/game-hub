@@ -12,6 +12,13 @@ export default class GameServer implements Party.Server {
     this.state = { game: publicName[room.name] || room.name, players: [], started: false };
   }
 
+  onRequest() {
+    return new Response(JSON.stringify({ ok: true, room: this.state.game }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   onConnect(conn: Conn) {
     const slot = this.state.players.findIndex((p) => p.id === conn.id);
     let player = slot;

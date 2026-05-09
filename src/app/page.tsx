@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { games } from "@/lib/games";
+import { RequestGameForm } from "@/components/RequestGameForm";
 
 export default function Home() {
   return (
@@ -33,6 +34,16 @@ export default function Home() {
             </div>
           </Link>
         ))}
+      </section>
+      <section className="grid gap-5 md:grid-cols-[1fr_1.4fr] md:items-start">
+        <div>
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">Have an idea?</p>
+          <h2 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">Request a Game</h2>
+          <p className="mt-4 max-w-md text-sm leading-6 text-zinc-400">
+            Want a different game added to the hub? Drop a note and it&rsquo;ll land in the inbox.
+          </p>
+        </div>
+        <RequestGameForm />
       </section>
     </main>
   );
