@@ -2,11 +2,14 @@ import type * as Party from "partykit/server";
 import { Chess } from "chess.js";
 
 type Conn = Party.Connection<{ player?: number }>;
-type Player = { id: string };
-type AnyState = Record<string, any> & { game: string; players: Player[]; started: boolean; error?: string };
+type Player = { id: string; bot?: boolean };
+type AnyState = Record<string, any> & { game: string; players: Player[]; started: boolean; error?: string; vsCpu?: boolean };
+
+const BOT_ID = "__cpu_bot__";
 
 export default class GameServer implements Party.Server {
   state: AnyState;
+  botScheduled = false;
   constructor(readonly room: Party.Room) {
     const publicName: Record<string, string> = { connectfour: "connect-four", guesswho: "guess-who" };
     this.state = { game: publicName[room.name] || room.name, players: [], started: false };
@@ -24,11 +27,19 @@ export default class GameServer implements Party.Server {
     let player = slot;
     if (player < 0 && this.state.players.length < 2) {
       player = this.state.players.length;
-      this.state.players.push({ id: conn.id });
-      conn.setState({ player });
+      // If a bot already occupies a slot, never bump it; new joiners go elsewhere.
+      // (CPU rooms only allow 1 human; second human would just spectate via no slot.)
+      const botSlots = this.state.players.filter((p) => p.bot).length;
+      if (this.state.vsCpu && this.state.players.length - botSlots >= 1) {
+        // No room for another human in a CPU game.
+      } else {
+        this.state.players.push({ id: conn.id });
+        conn.setState({ player });
+      }
     }
     if (this.state.players.length === 2 && !this.state.started) this.start();
     this.sendAll();
+    this.maybeBotMove();
   }
 
   onClose(conn: Conn) {
@@ -39,8 +50,21 @@ export default class GameServer implements Party.Server {
 
   onMessage(raw: string, conn: Conn) {
     const player = this.state.players.findIndex((p) => p.id === conn.id);
-    if (player < 0 || player > 1) return;
     const msg = JSON.parse(raw);
+
+    // Init: enable CPU mode if no game has started and no bot yet.
+    if (msg && msg.type === "init" && msg.vsCpu && !this.state.started && !this.state.vsCpu) {
+      this.state.vsCpu = true;
+      // Ensure this human is player 0; add bot as player 1.
+      if (this.state.players.length === 0) this.state.players.push({ id: conn.id });
+      if (this.state.players.length < 2) this.state.players.push({ id: BOT_ID, bot: true });
+      if (this.state.players.length === 2 && !this.state.started) this.start();
+      this.sendAll();
+      this.maybeBotMove();
+      return;
+    }
+
+    if (player < 0 || player > 1) return;
     this.state.error = "";
     try {
       if (this.state.game === "chess") chess(this.state, msg, player);
@@ -52,6 +76,7 @@ export default class GameServer implements Party.Server {
       this.state.error = error instanceof Error ? error.message : "Invalid move";
     }
     this.sendAll();
+    this.maybeBotMove();
   }
 
   start() {
@@ -64,7 +89,7 @@ export default class GameServer implements Party.Server {
   }
 
   base() {
-    return { game: this.state.game, players: this.state.players, started: true };
+    return { game: this.state.game, players: this.state.players, started: true, vsCpu: this.state.vsCpu };
   }
 
   sendAll() {
@@ -73,11 +98,88 @@ export default class GameServer implements Party.Server {
       conn.send(JSON.stringify(view(this.state, player)));
     }
   }
+
+  // ===== Bot driver =====
+  botIndex(): number {
+    return this.state.players.findIndex((p) => p.bot);
+  }
+
+  isBotTurn(): boolean {
+    const bot = this.botIndex();
+    if (bot < 0 || !this.state.started) return false;
+    if (this.state.over) return false;
+    const winner = this.state.winner;
+    const hasWinner = winner !== null && winner !== undefined;
+    if (hasWinner) return false;
+    const game = this.state.game;
+    if (game === "chess") {
+      // turn is "white"/"black"; bot is always player 1 = black in CPU mode.
+      return this.state.turn === (bot === 0 ? "white" : "black");
+    }
+    if (game === "guess-who") {
+      // bot also needs to set its secret first
+      if (this.state.secrets && this.state.secrets[bot] === null) return true;
+      return this.state.turn === bot;
+    }
+    return this.state.turn === bot;
+  }
+
+  maybeBotMove() {
+    if (this.botScheduled) return;
+    if (!this.isBotTurn()) return;
+    this.botScheduled = true;
+    const delay = 300 + Math.floor(Math.random() * 500);
+    setTimeout(() => {
+      this.botScheduled = false;
+      try {
+        this.runBotMove();
+      } catch (error) {
+        this.state.error = error instanceof Error ? error.message : "Bot error";
+      }
+      this.sendAll();
+      // chain (e.g., uno skip puts bot to play again)
+      if (this.isBotTurn()) this.maybeBotMove();
+    }, delay);
+  }
+
+  runBotMove() {
+    const bot = this.botIndex();
+    if (bot < 0) return;
+    const game = this.state.game;
+    if (game === "chess") {
+      const move = pickChessMove(this.state.fen);
+      if (move) {
+        try { chess(this.state, { type: "move", from: move.from, to: move.to, promotion: "q" }, bot); }
+        catch { /* ignore */ }
+      }
+      return;
+    }
+    if (game === "connect-four") {
+      const col = pickConnectFourMove(this.state.board, bot + 1, (1 - bot) + 1);
+      if (col >= 0) {
+        try { connectFour(this.state, { type: "drop", col }, bot); } catch { /* ignore */ }
+      }
+      return;
+    }
+    if (game === "uno") {
+      runUnoBot(this.state, bot);
+      return;
+    }
+    if (game === "guess-who") {
+      runGuessWhoBot(this.state, bot);
+      return;
+    }
+    if (game === "rummikub") {
+      runRummikubBot(this.state, bot);
+      return;
+    }
+  }
 }
 
 function view(state: AnyState, player: number) {
   const players = state.players.map((_, i) => `Player ${i + 1}`);
-  const base: Record<string, any> = { ...state, players, playerIndex: player };
+  const bots = state.players.map((p) => !!p.bot);
+  const base: Record<string, any> = { ...state, players, bots, playerIndex: player };
   delete base.secrets;
   delete base.hands;
   delete base.racks;
@@ -225,4 +327,132 @@ function shuffle<T>(items: T[]) {
     const j = Math.floor(Math.random() * (i + 1));
     [items[i], items[j]] = [items[j], items[i]];
   }
+}
+
+// ===================== BOT LOGIC =====================
+
+function pickChessMove(fen: string): { from: string; to: string } | null {
+  const game = new Chess(fen);
+  const moves = game.moves({ verbose: true }) as any[];
+  if (moves.length === 0) return null;
+  const captures = moves.filter((m) => m.captured);
+  const checks = moves.filter((m) => m.san && m.san.includes("+"));
+  const pool = captures.length > 0 ? captures : checks.length > 0 ? checks : moves;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  return { from: pick.from, to: pick.to };
+}
+
+function pickConnectFourMove(board: number[][], me: number, opp: number): number {
+  const valid = (col: number) => board[0][col] === 0;
+  const cols = [0, 1, 2, 3, 4, 5, 6].filter(valid);
+  if (cols.length === 0) return -1;
+  // (a) win
+  for (const col of cols) if (simulateWin(board, col, me)) return col;
+  // (b) block
+  for (const col of cols) if (simulateWin(board, col, opp)) return col;
+  // (c) center then random
+  if (cols.includes(3)) return 3;
+  return cols[Math.floor(Math.random() * cols.length)];
+}
+
+function simulateWin(board: number[][], col: number, mark: number): boolean {
+  for (let row = 5; row >= 0; row--) {
+    if (board[row][col] === 0) {
+      board[row][col] = mark;
+      const w = wins(board, row, col, mark);
+      board[row][col] = 0;
+      return w;
+    }
+  }
+  return false;
+}
+
+function runUnoBot(state: AnyState, bot: number) {
+  const hand = state.hands[bot] as any[];
+  const top = state.top;
+  const playable = hand.findIndex((c) => c.color === "wild" || c.color === top.color || c.value === top.value);
+  if (playable >= 0) {
+    const card = hand[playable];
+    let chosen = card.color;
+    if (card.color === "wild") {
+      const counts: Record<string, number> = { red: 0, yellow: 0, green: 0, blue: 0 };
+      for (const c of hand) if (counts[c.color] !== undefined) counts[c.color]++;
+      chosen = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]) || "red";
+    }
+    uno(state, { type: "play", id: card.id, color: chosen }, bot);
+    return;
+  }
+  // draw, then try to play
+  uno(state, { type: "draw" }, bot);
+  // After draw, turn passes to opponent in current rules — that's fine.
+}
+
+function runGuessWhoBot(state: AnyState, bot: number) {
+  // Pick secret if not yet picked
+  if (state.secrets[bot] === null) {
+    const id = Math.floor(Math.random() * 24);
+    guessWho(state, { type: "secret", id }, bot);
+    return;
+  }
+  if (state.secrets.some((s: number | null) => s === null)) return;
+  if (state.turn !== bot) return;
+  // Flip a random unflipped person
+  const flipped: number[] = state.flipped[bot] ?? [];
+  const unflipped = Array.from({ length: 24 }, (_, i) => i).filter((i) => !flipped.includes(i));
+  if (unflipped.length > 1) {
+    const id = unflipped[Math.floor(Math.random() * unflipped.length)];
+    guessWho(state, { type: "flip", id }, bot);
+  }
+  // Ask a binary question (also passes turn)
+  const questions = [
+    "Do they wear glasses?",
+    "Do they have a hat?",
+    "Do they have a beard?",
+    "Is their hair dark?",
+    "Is their skin light?",
+  ];
+  const q = questions[Math.floor(Math.random() * questions.length)];
+  guessWho(state, { type: "ask", question: q }, bot);
+}
+
+function runRummikubBot(state: AnyState, bot: number) {
+  const rack = state.racks[bot] as any[];
+  // Try to find a valid group of 3 from the rack.
+  const group = findRummikubGroup(rack);
+  if (group) {
+    rummikub(state, { type: "place", ids: group.map((t) => t.id) }, bot);
+    // Check if rack still allows play; otherwise end turn.
+    if (!state.winner && state.turn === bot) {
+      rummikub(state, { type: "end" }, bot);
+    }
+    return;
+  }
+  rummikub(state, { type: "draw" }, bot);
+}
+
+function findRummikubGroup(rack: any[]): any[] | null {
+  // same-number set: group by number, find any number with >=3 different colors.
+  const byN: Record<string, any[]> = {};
+  for (const t of rack) if (t.color !== "joker") (byN[t.n] ||= []).push(t);
+  for (const n in byN) {
+    const tiles = byN[n];
+    const seen = new Set<string>();
+    const picked: any[] = [];
+    for (const t of tiles) if (!seen.has(t.color)) { seen.add(t.color); picked.push(t); }
+    if (picked.length >= 3) return picked.slice(0, Math.min(4, picked.length));
+  }
+  // same-color run of 3+
+  const byC: Record<string, any[]> = {};
+  for (const t of rack) if (t.color !== "joker") (byC[t.color] ||= []).push(t);
+  for (const c in byC) {
+    const sorted = [...byC[c]].sort((a, b) => a.n - b.n);
+    const seenN = new Set<number>();
+    const dedup = sorted.filter((t) => { if (seenN.has(t.n)) return false; seenN.add(t.n); return true; });
+    for (let i = 0; i + 2 < dedup.length; i++) {
+      let j = i;
+      while (j + 1 < dedup.length && dedup[j + 1].n === dedup[j].n + 1) j++;
+      if (j - i + 1 >= 3) return dedup.slice(i, j + 1);
+    }
+  }
+  return null;
 }

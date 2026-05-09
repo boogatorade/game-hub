@@ -12,6 +12,10 @@ export function RoomLauncher({ gameId }: { gameId: string }) {
     router.push(`/games/${gameId}/${nanoid(6).toUpperCase()}`);
   }
 
+  function createCpuRoom() {
+    router.push(`/games/${gameId}/${nanoid(6).toUpperCase()}?cpu=1`);
+  }
+
   function joinRoom(event: FormEvent) {
     event.preventDefault();
     const clean = code.trim().toUpperCase();
@@ -19,9 +23,12 @@ export function RoomLauncher({ gameId }: { gameId: string }) {
   }
 
   return (
-    <div className="mt-8 grid gap-4 sm:grid-cols-[auto_1fr]">
+    <div className="mt-8 grid gap-4 sm:grid-cols-[auto_auto_1fr]">
       <button onClick={createRoom} className="rounded-md bg-cyan-300 px-5 py-3 font-semibold text-zinc-950 hover:bg-cyan-200">
         Create Room
+      </button>
+      <button onClick={createCpuRoom} className="rounded-md bg-fuchsia-400 px-5 py-3 font-semibold text-zinc-950 hover:bg-fuchsia-300">
+        Play vs CPU
       </button>
       <form onSubmit={joinRoom} className="flex gap-3">
         <input

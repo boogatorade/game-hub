@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import PartySocket from "partysocket";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 const Chessboard = dynamic(() => import("react-chessboard").then((mod) => mod.Chessboard), { ssr: false });
@@ -22,17 +23,22 @@ const partyNames: Record<string, string> = { "connect-four": "connectfour", "gue
 export function GameRoom({ gameId, code, title }: { gameId: string; code: string; title: string }) {
   const [state, setState] = useState<State | null>(null);
   const [status, setStatus] = useState("Connecting");
+  const searchParams = useSearchParams();
+  const vsCpu = searchParams?.get("cpu") === "1";
   const socket = useMemo(() => {
     const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST || fallbackHost;
     return new PartySocket({ host, party: partyNames[gameId] || gameId, room: code.toLowerCase() });
   }, [code, gameId]);
 
   useEffect(() => {
-    socket.addEventListener("open", () => setStatus("Connected"));
+    socket.addEventListener("open", () => {
+      setStatus("Connected");
+      if (vsCpu) socket.send(JSON.stringify({ type: "init", vsCpu: true }));
+    });
     socket.addEventListener("close", () => setStatus("Disconnected"));
     socket.addEventListener("message", (event) => setState(JSON.parse(event.data)));
     return () => socket.close();
-  }, [socket]);
+  }, [socket, vsCpu]);
 
   function send(message: Msg) {
     socket.send(JSON.stringify(message));
@@ -46,11 +52,16 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
         <p className="mt-4 text-sm text-zinc-400">Status: {status}</p>
         <div className="mt-5 space-y-2 text-sm text-zinc-300">
           <p>Players: {state?.players?.length ?? 0}/2</p>
-          {(state?.players ?? []).map((id, index) => (
-            <p key={id} className="rounded-md bg-white/5 px-3 py-2">Player {index + 1}{state?.playerIndex === index ? " (you)" : ""}</p>
-          ))}
+          {(state?.players ?? []).map((id, index) => {
+            const isBot = (state?.bots as boolean[] | undefined)?.[index];
+            const label = isBot ? "CPU" : `Player ${index + 1}`;
+            return (
+              <p key={`${id}-${index}`} className="rounded-md bg-white/5 px-3 py-2">{label}{state?.playerIndex === index ? " (you)" : ""}</p>
+            );
+          })}
         </div>
-        {!state?.started && <p className="mt-5 text-sm leading-6 text-zinc-400">Share this code with one more player. The game starts automatically.</p>}
+        {!state?.started && !vsCpu && <p className="mt-5 text-sm leading-6 text-zinc-400">Share this code with one more player. The game starts automatically.</p>}
+        {!state?.started && vsCpu && <p className="mt-5 text-sm leading-6 text-zinc-400">Spinning up CPU opponent...</p>}
         {state?.error && <p className="mt-5 rounded-md border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">{state.error}</p>}
       </aside>
       <section className="min-h-[560px] rounded-lg border border-white/10 bg-zinc-950/80 p-4 sm:p-6">
