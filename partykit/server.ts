@@ -4,6 +4,11 @@ import { Chess } from "chess.js";
 type Conn = Party.Connection<{ player?: number }>;
 type Player = { id: string; bot?: boolean };
 type Difficulty = "easy" | "medium" | "hard";
+type ChatState = {
+  status: "idle" | "pending" | "active";
+  requestedBy: number | null;
+  messages: { from: number; text: string; ts: number }[];
+};
 type AnyState = Record<string, any> & {
   game: string;
   players: Player[];
@@ -11,6 +16,7 @@ type AnyState = Record<string, any> & {
   error?: string;
   vsCpu?: boolean;
   difficulty?: Difficulty;
+  chat?: ChatState;
 };
 
 const BOT_ID = "__cpu_bot__";
@@ -57,6 +63,7 @@ export default class GameServer implements Party.Server {
   onClose(conn: Conn) {
     this.state.players = this.state.players.filter((p) => p.id !== conn.id);
     if (this.state.players.length < 2) this.state.started = false;
+    if (this.state.players.length === 0) void this.removeFromLobby();
     this.sendAll();
   }
 
@@ -80,6 +87,10 @@ export default class GameServer implements Party.Server {
     if (player < 0 || player > 1) return;
     this.state.error = "";
     try {
+      if (handleChat(this.state, msg, player)) {
+        this.sendAll();
+        return;
+      }
       if (this.state.game === "chess") chess(this.state, msg, player);
       if (this.state.game === "connect-four") connectFour(this.state, msg, player);
       if (this.state.game === "uno") uno(this.state, msg, player);
@@ -99,6 +110,7 @@ export default class GameServer implements Party.Server {
     if (game === "uno") this.state = startUno(this.base());
     if (game === "guess-who") this.state = { ...this.base(), secrets: [null, null], flipped: [[], []], turn: 0, log: [] };
     if (game === "rummikub") this.state = startRummikub(this.base());
+    void this.pingLobby();
   }
 
   base() {
@@ -108,6 +120,7 @@ export default class GameServer implements Party.Server {
       started: true,
       vsCpu: this.state.vsCpu,
       difficulty: this.state.difficulty,
+      chat: createChat(),
     };
   }
 
@@ -115,6 +128,35 @@ export default class GameServer implements Party.Server {
     for (const conn of this.room.getConnections() as Iterable<Conn>) {
       const player = this.state.players.findIndex((p) => p.id === conn.id);
       conn.send(JSON.stringify(view(this.state, player)));
+    }
+    void this.pingLobby();
+  }
+
+  async pingLobby() {
+    try {
+      await this.room.context.parties.lobby.get("default").fetch({
+        method: "POST",
+        body: JSON.stringify({
+          kind: "upsert",
+          game: this.state.game,
+          code: this.room.id,
+          players: this.state.players.length,
+          started: !!this.state.started,
+        }),
+      });
+    } catch {
+      // Lobby discovery is best-effort; gameplay should never fail because it is unavailable.
+    }
+  }
+
+  async removeFromLobby() {
+    try {
+      await this.room.context.parties.lobby.get("default").fetch({
+        method: "POST",
+        body: JSON.stringify({ kind: "remove", game: this.state.game, code: this.room.id }),
+      });
+    } catch {
+      // Best-effort cleanup; stale entries also expire in the lobby party.
     }
   }
 
@@ -213,6 +255,50 @@ function view(state: AnyState, player: number) {
     return { ...base, rack: state.racks[player] ?? [], poolCount: state.pool?.length ?? 0 };
   }
   return base;
+}
+
+function createChat(): ChatState {
+  return { status: "idle", requestedBy: null, messages: [] };
+}
+
+function chat(state: AnyState): ChatState {
+  if (!state.chat) state.chat = createChat();
+  return state.chat;
+}
+
+function handleChat(state: AnyState, msg: { type?: string; text?: unknown }, player: number): boolean {
+  if (!msg.type || !msg.type.startsWith("chat-")) return false;
+  if (state.vsCpu) return true;
+  const current = chat(state);
+  if (msg.type === "chat-request") {
+    if (current.status === "idle") {
+      current.status = "pending";
+      current.requestedBy = player;
+    }
+    return true;
+  }
+  if (msg.type === "chat-accept") {
+    if (current.status === "pending" && current.requestedBy !== player) current.status = "active";
+    return true;
+  }
+  if (msg.type === "chat-decline") {
+    if (current.status === "pending" && current.requestedBy !== player) {
+      current.status = "idle";
+      current.requestedBy = null;
+    }
+    return true;
+  }
+  if (msg.type === "chat-send") {
+    if (current.status === "active") {
+      const text = String(msg.text || "").trim().slice(0, 500);
+      if (text) {
+        current.messages.push({ from: player, text, ts: Date.now() });
+        current.messages = current.messages.slice(-100);
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 function assertTurn(state: AnyState, player: number) {

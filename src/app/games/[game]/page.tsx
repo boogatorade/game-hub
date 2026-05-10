@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ActiveRooms } from "@/components/ActiveRooms";
 import { RoomLauncher } from "@/components/RoomLauncher";
 import { getGame } from "@/lib/games";
 
@@ -16,7 +17,20 @@ export default async function GameLobby({ params }: { params: Promise<{ game: st
         <div className="p-6 sm:p-8">
           <h1 className="text-4xl font-bold tracking-tight text-white">{game.name}</h1>
           <p className="mt-3 max-w-2xl text-zinc-300">{game.blurb}</p>
+          <section className="mt-6">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-fuchsia-300">How to play</h2>
+            <div className="mt-3 aspect-video w-full max-w-[720px] overflow-hidden rounded-lg border border-white/10 bg-black">
+              <iframe
+                src={`https://www.youtube-nocookie.com/embed/${game.youtube}`}
+                title={`${game.name} tutorial`}
+                className="h-full w-full"
+                allow="accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            </div>
+          </section>
           <RoomLauncher gameId={game.id} />
+          <ActiveRooms gameId={game.id} />
         </div>
       </section>
     </main>

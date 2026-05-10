@@ -1,6 +1,9 @@
 "use client";
 
-import { nanoid } from "nanoid";
+import { customAlphabet } from "nanoid";
+
+// Alphanumeric only, no look-alike chars (no 0/O, no 1/I/L). Easy to share verbally.
+const makeRoomCode = customAlphabet("ABCDEFGHJKMNPQRSTUVWXYZ23456789", 6);
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
@@ -18,11 +21,11 @@ export function RoomLauncher({ gameId }: { gameId: string }) {
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
 
   function createRoom() {
-    router.push(`/games/${gameId}/${nanoid(6).toUpperCase()}`);
+    router.push(`/games/${gameId}/${makeRoomCode()}`);
   }
 
   function createCpuRoom() {
-    router.push(`/games/${gameId}/${nanoid(6).toUpperCase()}?cpu=1&diff=${difficulty}`);
+    router.push(`/games/${gameId}/${makeRoomCode()}?cpu=1&diff=${difficulty}`);
   }
 
   function joinRoom(event: FormEvent) {

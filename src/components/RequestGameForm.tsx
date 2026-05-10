@@ -14,7 +14,7 @@ export function RequestGameForm() {
   const [idea, setIdea] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!idea.trim()) {
       setStatus({ kind: "error", message: "Please describe a game." });
@@ -22,22 +22,24 @@ export function RequestGameForm() {
     }
     setStatus({ kind: "sending" });
     try {
-      const subject = `Game Hub request${name ? ` from ${name}` : ""}`;
-      const bodyLines = [
-        name ? `Name: ${name}` : null,
-        email ? `Email: ${email}` : null,
-        "",
-        "Idea:",
-        idea,
-      ].filter((line) => line !== null);
-      const body = bodyLines.join("\n");
-      const url = `mailto:boogatorade@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-      window.location.href = url;
+      const response = await fetch("/api/game-request", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, email, idea }),
+      });
+      if (!response.ok) {
+        if (response.status === 503) {
+          throw new Error("Email isn't configured yet - bug Asher to add the GMAIL_* env vars in Vercel.");
+        }
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error || "Could not send request");
+      }
       setStatus({ kind: "success" });
+      setIdea("");
     } catch (err) {
       setStatus({
         kind: "error",
-        message: err instanceof Error ? err.message : "Could not open mail app",
+        message: err instanceof Error ? err.message : "Could not send request",
       });
     }
   }
@@ -99,7 +101,7 @@ export function RequestGameForm() {
           {sending ? "Sending..." : "Send request"}
         </button>
         {status.kind === "success" && (
-          <p className="text-sm text-cyan-300">Opening your email app — hit Send to deliver it.</p>
+          <p className="text-sm text-cyan-300">Thanks - your request is on its way.</p>
         )}
         {status.kind === "error" && (
           <p className="text-sm text-red-300">{status.message}</p>

@@ -17,6 +17,11 @@ function rand6() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
+function httpBase() {
+  const protocol = HOST.startsWith("localhost") || HOST.startsWith("127.0.0.1") ? "http" : "https";
+  return `${protocol}://${HOST}`;
+}
+
 function connect(game, code) {
   return new Promise((resolve, reject) => {
     const sock = new PartySocket({ host: HOST, party: PARTIES[game], room: code.toLowerCase() });
@@ -57,6 +62,12 @@ async function testTwoPlayer(game) {
   const stA = await a.next((s) => s.started === true && s.players.length === 2);
   const stB = await b.next((s) => s.started === true && s.players.length === 2);
   if (stA.playerIndex !== 0 || stB.playerIndex !== 1) throw new Error(`bad indices: ${stA.playerIndex}/${stB.playerIndex}`);
+  a.send({ type: "chat-request" });
+  await b.next((s) => s.chat?.status === "pending" && s.chat?.requestedBy === 0, 5000);
+  b.send({ type: "chat-accept" });
+  await a.next((s) => s.chat?.status === "active", 5000);
+  a.send({ type: "chat-send", text: `hello from ${game}` });
+  await b.next((s) => s.chat?.messages?.some((m) => m.text === `hello from ${game}`), 5000);
   // Play a single legal move and verify both clients see it.
   if (game === "chess") {
     a.send({ type: "move", from: "e2", to: "e4" });
@@ -79,6 +90,25 @@ async function testTwoPlayer(game) {
     await b.next((s) => s.started && s.turn === 1);
   }
   a.close(); b.close();
+}
+
+async function testLobbyRegistry() {
+  const game = "chess";
+  const code = rand6();
+  const a = await connect(game, code);
+  await a.next((s) => Array.isArray(s.players) && s.players.length === 1, 5000);
+  const url = `${httpBase()}/parties/lobby/default?game=${encodeURIComponent(game)}`;
+  let found = false;
+  for (let i = 0; i < 5; i++) {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`lobby returned ${response.status}`);
+    const data = await response.json();
+    found = data.rooms?.some((room) => room.game === game && room.code.toLowerCase() === code.toLowerCase() && room.players === 1);
+    if (found) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  a.close();
+  if (!found) throw new Error("created room did not appear in lobby registry");
 }
 
 async function testCpu(game, difficulty) {
@@ -121,6 +151,10 @@ async function testCpu(game, difficulty) {
 
 async function main() {
   console.log(`Smoke test against ${HOST}\n`);
+
+  console.log("Lobby registry:");
+  try { await testLobbyRegistry(); ok("active room appears in lobby registry"); }
+  catch (err) { bad("active room registry", err.message); }
 
   console.log("Two-player rooms:");
   for (const game of GAMES) {
