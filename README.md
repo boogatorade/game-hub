@@ -39,10 +39,10 @@ Set `NEXT_PUBLIC_PARTYKIT_HOST` in Vercel production to the PartyKit host, witho
 Set the Guess Who judge API key in PartyKit before relying on automatic yes/no answers:
 
 ```bash
-npx partykit env add ANTHROPIC_API_KEY
+npx partykit env add GEMINI_API_KEY
 ```
 
-Paste the Anthropic key when prompted. If a Next.js judge route is added later, set the same `ANTHROPIC_API_KEY` in Vercel too. The current implementation calls Anthropic from PartyKit only, and gracefully records the judge as unavailable while the PartyKit env var is missing.
+Paste a Google AI Studio key when prompted (free at https://aistudio.google.com/apikey — `gemini-2.5-flash` is on the free tier). `GOOGLE_API_KEY` is accepted as a fallback name. If the env var is missing the judge gracefully records "judge unavailable" instead of failing the turn.
 
 ## Game Status
 

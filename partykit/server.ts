@@ -444,24 +444,25 @@ function guessWhoTraits(id: number): string {
 }
 
 async function judgeQuestion(env: Record<string, unknown> | undefined, traits: string, question: string): Promise<"yes" | "no" | "unclear"> {
-  const apiKey = typeof env?.ANTHROPIC_API_KEY === "string" ? env.ANTHROPIC_API_KEY : "";
+  const apiKey =
+    (typeof env?.GEMINI_API_KEY === "string" && env.GEMINI_API_KEY) ||
+    (typeof env?.GOOGLE_API_KEY === "string" && env.GOOGLE_API_KEY) ||
+    "";
   if (!apiKey) return "unclear";
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }] }],
+        generationConfig: { maxOutputTokens: 5, temperature: 0 },
+      }),
     },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5",
-      max_tokens: 5,
-      messages: [{ role: "user", content: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }],
-    }),
-  });
+  );
   if (!response.ok) return "unclear";
-  const data = await response.json() as { content?: { text?: string }[] };
-  const text = String(data.content?.[0]?.text || "").trim().toLowerCase().slice(0, 3);
+  const data = await response.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+  const text = String(data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim().toLowerCase().slice(0, 3);
   if (text.startsWith("yes")) return "yes";
   if (text.startsWith("no")) return "no";
   return "unclear";
