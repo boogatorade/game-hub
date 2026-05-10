@@ -9,6 +9,7 @@ type ChatState = {
   requestedBy: number | null;
   messages: { from: number; text: string; ts: number }[];
 };
+type RummikubTile = { id: string; color: string; n: number | "J" };
 type AnyState = Record<string, any> & {
   game: string;
   players: Player[];
@@ -33,7 +34,21 @@ export default class GameServer implements Party.Server {
     this.state = { game: publicName[room.name] || room.name, players: [], started: false };
   }
 
-  onRequest() {
+  async onRequest(request: Party.Request) {
+    if (request.method === "POST") {
+      try {
+        const body = await request.json() as { kind?: string; group?: RummikubTile[]; existing?: RummikubTile[]; added?: RummikubTile[] };
+        if (body.kind === "rummikub-validate") {
+          const group = Array.isArray(body.group) ? body.group : [];
+          const existing = Array.isArray(body.existing) ? body.existing : [];
+          const added = Array.isArray(body.added) ? body.added : [];
+          const merged = existing.length > 0 ? mergeRummikubGroup(existing, added) : null;
+          return Response.json({ valid: existing.length > 0 ? !!merged : validGroup(group), merged });
+        }
+      } catch {
+        return Response.json({ error: "Invalid request" }, { status: 400 });
+      }
+    }
     return new Response(JSON.stringify({ ok: true, room: this.state.game }), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -94,7 +109,7 @@ export default class GameServer implements Party.Server {
       if (this.state.game === "chess") chess(this.state, msg, player);
       if (this.state.game === "connect-four") connectFour(this.state, msg, player);
       if (this.state.game === "uno") uno(this.state, msg, player);
-      if (this.state.game === "guess-who") guessWho(this.state, msg, player);
+      if (this.state.game === "guess-who") guessWho(this.state, msg, player, this.room.env, () => this.sendAll());
       if (this.state.game === "rummikub") rummikub(this.state, msg, player);
     } catch (error) {
       this.state.error = error instanceof Error ? error.message : "Invalid move";
@@ -228,7 +243,7 @@ export default class GameServer implements Party.Server {
       return;
     }
     if (game === "guess-who") {
-      runGuessWhoBot(this.state, bot, difficulty);
+      runGuessWhoBot(this.state, bot, difficulty, this.room.env, () => this.sendAll());
       return;
     }
     if (game === "rummikub") {
@@ -384,7 +399,7 @@ function uno(state: AnyState, msg: any, player: number) {
   state.turn = skip ? player : 1 - player;
 }
 
-function guessWho(state: AnyState, msg: any, player: number) {
+function guessWho(state: AnyState, msg: any, player: number, env?: Record<string, unknown>, notify?: () => void) {
   if (msg.type === "secret" && state.secrets[player] === null) state.secrets[player] = Number(msg.id);
   if (state.secrets.some((x: number | null) => x === null)) return;
   if (msg.type === "flip") {
@@ -394,9 +409,62 @@ function guessWho(state: AnyState, msg: any, player: number) {
   if (msg.type === "ask") {
     if (state.turn !== player) throw new Error("Not your turn");
     const question = String(msg.question || "").slice(0, 120);
-    if (question) state.log.push(`Player ${player + 1}: ${question}`);
+    if (question) {
+      state.log.push(`Player ${player + 1}: ${question}`);
+      const secret = state.secrets[1 - player];
+      if (typeof secret === "number") {
+        state.judgeCalls = Number(state.judgeCalls || 0);
+        if (state.judgeCalls < 100) {
+          state.judgeCalls++;
+          void judgeQuestion(env, guessWhoTraits(secret), question).then((answer) => {
+            if (answer === "unclear") state.log.push(`Player ${1 - player + 1} couldn't answer (judge unavailable)`);
+            else state.log.push(`Player ${1 - player + 1} answers: ${answer}`);
+            notify?.();
+          }).catch(() => {
+            state.log.push(`Player ${1 - player + 1} couldn't answer (judge unavailable)`);
+            notify?.();
+          });
+        }
+      }
+    }
     state.turn = 1 - player;
   }
+}
+
+function guessWhoTraits(id: number): string {
+  const skins = ["light skin", "medium skin", "dark skin", "tan skin"];
+  const hair = ["dark hair", "auburn hair", "blond hair", "gray hair"];
+  return [
+    `The character has ${hair[id % 4]}`,
+    id % 3 === 0 ? "glasses" : "no glasses",
+    id % 5 === 0 ? "a hat" : "no hat",
+    id % 4 === 0 ? "a beard" : "no beard",
+    skins[id % 4],
+  ].join(", ");
+}
+
+async function judgeQuestion(env: Record<string, unknown> | undefined, traits: string, question: string): Promise<"yes" | "no" | "unclear"> {
+  const apiKey = typeof env?.ANTHROPIC_API_KEY === "string" ? env.ANTHROPIC_API_KEY : "";
+  if (!apiKey) return "unclear";
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5",
+      max_tokens: 5,
+      messages: [{ role: "user", content: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }],
+    }),
+  });
+  if (!response.ok) return "unclear";
+  const data = await response.json() as { content?: { text?: string }[] };
+  const text = String(data.content?.[0]?.text || "").trim().toLowerCase().slice(0, 3);
+  if (text.startsWith("yes")) return "yes";
+  if (text.startsWith("no")) return "no";
+  return "unclear";
 }
 
 function startRummikub(base: AnyState) {
@@ -419,19 +487,57 @@ function rummikub(state: AnyState, msg: any, player: number) {
   if (msg.type !== "place") return;
   const ids = new Set<string>(msg.ids || []);
   const group = state.racks[player].filter((t: any) => ids.has(t.id));
+  if (group.length !== ids.size) throw new Error("Tile not in rack");
+  if (Number.isInteger(msg.into)) {
+    const into = Number(msg.into);
+    const existing = state.table[into];
+    if (!Array.isArray(existing)) throw new Error("Table group not found");
+    const merged = mergeRummikubGroup(existing, group);
+    if (!merged) throw new Error("Placed tiles must keep the table group valid");
+    state.racks[player] = state.racks[player].filter((t: RummikubTile) => !ids.has(t.id));
+    state.table[into] = merged;
+    if (state.racks[player].length === 0) state.winner = player;
+    return;
+  }
   if (!validGroup(group)) throw new Error("Group must be same-number different-color set of 3-4, or same-color run of 3+");
-  state.racks[player] = state.racks[player].filter((t: any) => !ids.has(t.id));
+  state.racks[player] = state.racks[player].filter((t: RummikubTile) => !ids.has(t.id));
   state.table.push(group);
   if (state.racks[player].length === 0) state.winner = player;
 }
 
-function validGroup(group: any[]) {
+function mergeRummikubGroup(existing: RummikubTile[], added: RummikubTile[]): RummikubTile[] | null {
+  const append = [...existing, ...added];
+  if (validGroup(append)) return append;
+  const prepend = [...added, ...existing];
+  if (validGroup(prepend)) return prepend;
+  return null;
+}
+
+function validGroup(group: RummikubTile[]) {
   if (group.length < 3) return false;
-  if (group.some((t) => t.color === "joker")) return true;
-  const sameNumber = group.every((t) => t.n === group[0].n) && new Set(group.map((t) => t.color)).size === group.length && group.length <= 4;
-  const sorted = [...group].sort((a, b) => a.n - b.n);
-  const run = group.every((t) => t.color === group[0].color) && sorted.every((t, i) => i === 0 || t.n === sorted[i - 1].n + 1);
-  return sameNumber || run;
+  const jokers = group.filter((t) => t.color === "joker").length;
+  const tiles = group.filter((t) => t.color !== "joker" && typeof t.n === "number") as (RummikubTile & { n: number })[];
+
+  const set = (() => {
+    if (group.length < 3 || group.length > 4 || tiles.length === 0) return false;
+    const n = tiles[0].n;
+    if (!tiles.every((t) => t.n === n)) return false;
+    return new Set(tiles.map((t) => t.color)).size === tiles.length && tiles.length + jokers === group.length;
+  })();
+
+  const run = (() => {
+    if (group.length < 3 || tiles.length === 0) return false;
+    const color = tiles[0].color;
+    if (!tiles.every((t) => t.color === color)) return false;
+    const sorted = [...tiles].sort((a, b) => a.n - b.n);
+    const numbers = sorted.map((t) => t.n);
+    if (new Set(numbers).size !== numbers.length) return false;
+    const gaps = numbers.slice(1).reduce((total, n, i) => total + Math.max(0, n - numbers[i] - 1), 0);
+    const span = numbers[numbers.length - 1] - numbers[0] + 1;
+    return gaps <= jokers && span <= group.length && numbers[0] >= 1 && numbers[numbers.length - 1] <= 13;
+  })();
+
+  return set || run;
 }
 
 function shuffle<T>(items: T[]) {
@@ -519,10 +625,14 @@ function pickConnectFourMove(board: number[][], me: number, opp: number, difficu
   }
 
   if (difficulty === "medium") {
-    // Win, block, prefer center, else random.
-    for (const col of cols) if (simulateWin(board, col, me)) return col;
-    for (const col of cols) if (simulateWin(board, col, opp)) return col;
-    if (cols.includes(3)) return 3;
+    // Win or block, but randomize among equivalent tactical moves.
+    const wins = cols.filter((col) => simulateWin(board, col, me));
+    if (wins.length > 0) return wins[Math.floor(Math.random() * wins.length)];
+    const blocks = cols.filter((col) => simulateWin(board, col, opp));
+    if (blocks.length > 0) return blocks[Math.floor(Math.random() * blocks.length)];
+    if (Math.random() < 0.1) return cols[Math.floor(Math.random() * cols.length)];
+    const nearCenter = cols.filter((col) => Math.abs(3 - col) <= 1);
+    if (nearCenter.length > 0) return nearCenter[Math.floor(Math.random() * nearCenter.length)];
     return cols[Math.floor(Math.random() * cols.length)];
   }
 
@@ -543,15 +653,15 @@ function c4Minimax(board: number[][], depth: number, alpha: number, beta: number
     if (terminal === 0) return { col: -1, score: 0 };
     return { col: -1, score: c4Heuristic(board, me, opp) };
   }
-  // Center-first ordering for better pruning.
-  const ordered = valid.slice().sort((a, b) => Math.abs(3 - a) - Math.abs(3 - b));
+  // Center-biased ordering with randomized order inside equal-distance bands.
+  const ordered = c4OrderedCols(valid);
   let bestCol = ordered[0];
   if (maximizing) {
     let value = -Infinity;
     for (const col of ordered) {
       const row = c4Drop(board, col, me);
       if (row < 0) continue;
-      const next = c4Minimax(board, depth - 1, alpha, beta, false, me, opp).score;
+      const next = c4Minimax(board, depth - 1, alpha, beta, false, me, opp).score + (Math.random() - 0.5) * 0.5;
       board[row][col] = 0;
       if (next > value) { value = next; bestCol = col; }
       alpha = Math.max(alpha, value);
@@ -563,7 +673,7 @@ function c4Minimax(board: number[][], depth: number, alpha: number, beta: number
     for (const col of ordered) {
       const row = c4Drop(board, col, opp);
       if (row < 0) continue;
-      const next = c4Minimax(board, depth - 1, alpha, beta, true, me, opp).score;
+      const next = c4Minimax(board, depth - 1, alpha, beta, true, me, opp).score + (Math.random() - 0.5) * 0.5;
       board[row][col] = 0;
       if (next < value) { value = next; bestCol = col; }
       beta = Math.min(beta, value);
@@ -571,6 +681,16 @@ function c4Minimax(board: number[][], depth: number, alpha: number, beta: number
     }
     return { col: bestCol, score: value };
   }
+}
+
+function c4OrderedCols(valid: number[]): number[] {
+  const ordered: number[] = [];
+  for (const distance of [0, 1, 2, 3]) {
+    const band = valid.filter((col) => Math.abs(3 - col) === distance);
+    shuffle(band);
+    ordered.push(...band);
+  }
+  return ordered;
 }
 
 function c4Drop(board: number[][], col: number, mark: number): number {
@@ -677,11 +797,11 @@ function runUnoBot(state: AnyState, bot: number, difficulty: Difficulty) {
   uno(state, { type: "play", id: card.id, color: chosen }, bot);
 }
 
-function runGuessWhoBot(state: AnyState, bot: number, difficulty: Difficulty) {
+function runGuessWhoBot(state: AnyState, bot: number, difficulty: Difficulty, env?: Record<string, unknown>, notify?: () => void) {
   // Pick secret if not yet picked
   if (state.secrets[bot] === null) {
     const id = Math.floor(Math.random() * 24);
-    guessWho(state, { type: "secret", id }, bot);
+    guessWho(state, { type: "secret", id }, bot, env, notify);
     return;
   }
   if (state.secrets.some((s: number | null) => s === null)) return;
@@ -696,7 +816,7 @@ function runGuessWhoBot(state: AnyState, bot: number, difficulty: Difficulty) {
   for (let i = 0; i < flipsPerTurn && unflipped.length > 1; i++) {
     const idx = Math.floor(Math.random() * unflipped.length);
     const id = unflipped.splice(idx, 1)[0];
-    guessWho(state, { type: "flip", id }, bot);
+    guessWho(state, { type: "flip", id }, bot, env, notify);
   }
 
   const easyQuestions = ["Do they look friendly?", "Do you like them?", "Hmm... interesting?"];
@@ -709,7 +829,7 @@ function runGuessWhoBot(state: AnyState, bot: number, difficulty: Difficulty) {
   ];
   const pool = difficulty === "easy" ? easyQuestions : goodQuestions;
   const q = pool[Math.floor(Math.random() * pool.length)];
-  guessWho(state, { type: "ask", question: q }, bot);
+  guessWho(state, { type: "ask", question: q }, bot, env, notify);
 }
 
 function runRummikubBot(state: AnyState, bot: number, difficulty: Difficulty) {

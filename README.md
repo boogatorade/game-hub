@@ -36,13 +36,21 @@ vercel --prod --yes
 
 Set `NEXT_PUBLIC_PARTYKIT_HOST` in Vercel production to the PartyKit host, without protocol.
 
+Set the Guess Who judge API key in PartyKit before relying on automatic yes/no answers:
+
+```bash
+npx partykit env add ANTHROPIC_API_KEY
+```
+
+Paste the Anthropic key when prompted. If a Next.js judge route is added later, set the same `ANTHROPIC_API_KEY` in Vercel too. The current implementation calls Anthropic from PartyKit only, and gracefully records the judge as unavailable while the PartyKit env var is missing.
+
 ## Game Status
 
 - Chess: working. Server validates moves with `chess.js`.
 - Connect Four: working. Server validates drops and wins.
 - Uno: partial but playable. Server validates color/value/wild matches and action effects. Hands are private per player, but stacking/challenge rules are omitted.
-- Guess Who: partial but playable. Server tracks secret picks, per-player flips, questions, and turns. Yes/no answers are handled socially in text, not enforced.
-- Rummikub: partial. Server supports drawing, placing same-number sets or same-color runs, and ending turns. Full table rearrangement and initial meld scoring are omitted.
+- Guess Who: partial but playable. Server tracks secret picks, per-player flips, questions, and turns. Yes/no questions can be answered by the PartyKit Anthropic judge when `ANTHROPIC_API_KEY` is configured.
+- Rummikub: partial. Server supports drawing, placing same-number sets or same-color runs, adding tiles to existing table groups, and ending turns. Full table rearrangement and initial meld scoring are omitted.
 
 ## Stripe
 

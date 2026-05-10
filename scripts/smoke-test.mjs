@@ -149,6 +149,91 @@ async function testCpu(game, difficulty) {
   a.close();
 }
 
+async function testConnectFourNonDeterminism() {
+  const finals = new Set();
+  for (let i = 0; i < 5; i++) {
+    const code = rand6();
+    const a = await connect("connect-four", code);
+    a.send({ type: "init", vsCpu: true, difficulty: "medium" });
+    await a.next((s) => s.started === true && s.players.length === 2 && s.bots?.[1] === true, 5000);
+    const humanMoves = [3, 2, 4];
+    for (let move = 0; move < humanMoves.length; move++) {
+      const col = humanMoves[move];
+      const targetFilled = (move + 1) * 2;
+      a.send({ type: "drop", col });
+      await a.next((s) => {
+        if (!Array.isArray(s.board)) return false;
+        const filled = s.board.flat().filter((x) => x !== 0).length;
+        return filled >= targetFilled && s.turn === 0;
+      }, 8000);
+    }
+    const latest = a.states.at(-1);
+    finals.add(latest.board.map((row) => row.join("")).join("/"));
+    a.close();
+  }
+  if (finals.size < 2) throw new Error("5 medium CPU games produced identical opening boards");
+}
+
+async function postRummikubValidation(body) {
+  const url = `${httpBase()}/parties/rummikub/${rand6().toLowerCase()}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "rummikub-validate", ...body }),
+  });
+  if (!response.ok) throw new Error(`validation returned ${response.status}`);
+  return response.json();
+}
+
+async function testRummikubValidation() {
+  const wildSet = await postRummikubValidation({ group: [
+    { id: "red-7", color: "red", n: 7 },
+    { id: "blue-7", color: "blue", n: 7 },
+    { id: "joker-1", color: "joker", n: "J" },
+  ] });
+  if (!wildSet.valid) throw new Error("joker-backed same-number set should be valid");
+
+  const tooManyColors = await postRummikubValidation({ group: [
+    { id: "red-7", color: "red", n: 7 },
+    { id: "blue-7", color: "blue", n: 7 },
+    { id: "green-7", color: "green", n: 7 },
+    { id: "yellow-7", color: "yellow", n: 7 },
+    { id: "orange-7", color: "orange", n: 7 },
+  ] });
+  if (tooManyColors.valid) throw new Error("5-color set should be invalid");
+
+  const runWithJoker = await postRummikubValidation({ group: [
+    { id: "red-4", color: "red", n: 4 },
+    { id: "joker-1", color: "joker", n: "J" },
+    { id: "red-6", color: "red", n: 6 },
+  ] });
+  if (!runWithJoker.valid) throw new Error("3-tile run with one joker should be valid");
+
+  const malformed = await postRummikubValidation({ group: [
+    { id: "red-4", color: "red", n: 4 },
+    { id: "blue-5", color: "blue", n: 5 },
+    { id: "green-9", color: "green", n: 9 },
+  ] });
+  if (malformed.valid) throw new Error("malformed group should be invalid");
+
+  const jokerOnly = await postRummikubValidation({ group: [
+    { id: "joker-1", color: "joker", n: "J" },
+    { id: "joker-2", color: "joker", n: "J" },
+    { id: "joker-3", color: "joker", n: "J" },
+  ] });
+  if (jokerOnly.valid) throw new Error("joker-only group should be invalid");
+
+  const addToRun = await postRummikubValidation({
+    existing: [
+      { id: "blue-2", color: "blue", n: 2 },
+      { id: "blue-3", color: "blue", n: 3 },
+      { id: "blue-4", color: "blue", n: 4 },
+    ],
+    added: [{ id: "blue-5", color: "blue", n: 5 }],
+  });
+  if (!addToRun.valid) throw new Error("adding to an existing run should be valid");
+}
+
 async function main() {
   console.log(`Smoke test against ${HOST}\n`);
 
@@ -169,6 +254,12 @@ async function main() {
       catch (err) { bad(`${game} vs CPU (${diff})`, err.message); }
     }
   }
+
+  console.log("\nRound 2 regressions:");
+  try { await testConnectFourNonDeterminism(); ok("connect-four medium CPU openings vary"); }
+  catch (err) { bad("connect-four medium CPU openings vary", err.message); }
+  try { await testRummikubValidation(); ok("rummikub joker and malformed group validation"); }
+  catch (err) { bad("rummikub group validation", err.message); }
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail === 0 ? 0 : 1);

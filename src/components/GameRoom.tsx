@@ -26,6 +26,7 @@ type ChatState = {
 
 const fallbackHost = typeof window !== "undefined" ? `${window.location.hostname}:1999` : "localhost:1999";
 const partyNames: Record<string, string> = { "connect-four": "connectfour", "guess-who": "guesswho" };
+const GUESS_WHO_COUNT_KEY = "game-hub-guesswho-count";
 
 export function GameRoom({ gameId, code, title }: { gameId: string; code: string; title: string }) {
   const [state, setState] = useState<State | null>(null);
@@ -51,6 +52,15 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
     socket.addEventListener("message", (event) => setState(JSON.parse(event.data)));
     return () => socket.close();
   }, [socket, vsCpu, difficulty]);
+
+  useEffect(() => {
+    if (!state?.started || state.game !== "guess-who") return;
+    const sessionKey = `${GUESS_WHO_COUNT_KEY}:${code.toLowerCase()}`;
+    if (sessionStorage.getItem(sessionKey)) return;
+    sessionStorage.setItem(sessionKey, "1");
+    const current = Number(localStorage.getItem(GUESS_WHO_COUNT_KEY) || 0);
+    localStorage.setItem(GUESS_WHO_COUNT_KEY, String(current + 1));
+  }, [code, state?.game, state?.started]);
 
   function send(message: Msg) {
     socket.send(JSON.stringify(message));
@@ -293,7 +303,20 @@ function Rummikub({ state, send }: { state: State; send: (message: Msg) => void 
       </div>
       <div className="rounded-lg bg-black/20 p-3">
         <p className="mb-3 text-sm text-zinc-400">Table</p>
-        <div className="space-y-3">{((state.table as Tile[][]) ?? []).map((group, i) => <div key={i} className="flex flex-wrap gap-2">{group.map((tile) => <TileView key={tile.id} tile={tile} />)}</div>)}</div>
+        <div className="space-y-3">
+          {((state.table as Tile[][]) ?? []).map((group, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2">
+              {group.map((tile) => <TileView key={tile.id} tile={tile} />)}
+              <button
+                type="button"
+                onClick={() => { play("place"); send({ type: "place", into: i, ids: selected }); setSelected([]); }}
+                className="rounded-md border border-white/15 px-3 py-2 text-sm text-zinc-200 hover:border-cyan-300/50"
+              >
+                Add selected
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
       <div className="flex flex-wrap gap-2">{rack.map((tile) => <button key={tile.id} onClick={() => toggle(tile.id)} className={selected.includes(tile.id) ? "ring-2 ring-cyan-300" : ""}><TileView tile={tile} /></button>)}</div>
     </div>
