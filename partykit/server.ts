@@ -3,9 +3,21 @@ import { Chess } from "chess.js";
 
 type Conn = Party.Connection<{ player?: number }>;
 type Player = { id: string; bot?: boolean };
-type AnyState = Record<string, any> & { game: string; players: Player[]; started: boolean; error?: string; vsCpu?: boolean };
+type Difficulty = "easy" | "medium" | "hard";
+type AnyState = Record<string, any> & {
+  game: string;
+  players: Player[];
+  started: boolean;
+  error?: string;
+  vsCpu?: boolean;
+  difficulty?: Difficulty;
+};
 
 const BOT_ID = "__cpu_bot__";
+
+function normalizeDifficulty(value: unknown): Difficulty {
+  return value === "easy" || value === "hard" ? value : "medium";
+}
 
 export default class GameServer implements Party.Server {
   state: AnyState;
@@ -55,6 +67,7 @@ export default class GameServer implements Party.Server {
     // Init: enable CPU mode if no game has started and no bot yet.
     if (msg && msg.type === "init" && msg.vsCpu && !this.state.started && !this.state.vsCpu) {
       this.state.vsCpu = true;
+      this.state.difficulty = normalizeDifficulty(msg.difficulty);
       // Ensure this human is player 0; add bot as player 1.
       if (this.state.players.length === 0) this.state.players.push({ id: conn.id });
       if (this.state.players.length < 2) this.state.players.push({ id: BOT_ID, bot: true });
@@ -89,7 +102,13 @@ export default class GameServer implements Party.Server {
   }
 
   base() {
-    return { game: this.state.game, players: this.state.players, started: true, vsCpu: this.state.vsCpu };
+    return {
+      game: this.state.game,
+      players: this.state.players,
+      started: true,
+      vsCpu: this.state.vsCpu,
+      difficulty: this.state.difficulty,
+    };
   }
 
   sendAll() {
@@ -145,9 +164,10 @@ export default class GameServer implements Party.Server {
   runBotMove() {
     const bot = this.botIndex();
     if (bot < 0) return;
+    const difficulty: Difficulty = this.state.difficulty || "medium";
     const game = this.state.game;
     if (game === "chess") {
-      const move = pickChessMove(this.state.fen);
+      const move = pickChessMove(this.state.fen, difficulty);
       if (move) {
         try { chess(this.state, { type: "move", from: move.from, to: move.to, promotion: "q" }, bot); }
         catch { /* ignore */ }
@@ -155,22 +175,22 @@ export default class GameServer implements Party.Server {
       return;
     }
     if (game === "connect-four") {
-      const col = pickConnectFourMove(this.state.board, bot + 1, (1 - bot) + 1);
+      const col = pickConnectFourMove(this.state.board, bot + 1, (1 - bot) + 1, difficulty);
       if (col >= 0) {
         try { connectFour(this.state, { type: "drop", col }, bot); } catch { /* ignore */ }
       }
       return;
     }
     if (game === "uno") {
-      runUnoBot(this.state, bot);
+      runUnoBot(this.state, bot, difficulty);
       return;
     }
     if (game === "guess-who") {
-      runGuessWhoBot(this.state, bot);
+      runGuessWhoBot(this.state, bot, difficulty);
       return;
     }
     if (game === "rummikub") {
-      runRummikubBot(this.state, bot);
+      runRummikubBot(this.state, bot, difficulty);
       return;
     }
   }
@@ -183,9 +203,15 @@ function view(state: AnyState, player: number) {
   delete base.secrets;
   delete base.hands;
   delete base.racks;
-  if (state.game === "uno" && player >= 0) return { ...base, hand: state.hands[player], opponentCount: state.hands[1 - player].length };
-  if (state.game === "guess-who" && player >= 0) return { ...base, secret: state.secrets[player], flipped: state.flipped[player] };
-  if (state.game === "rummikub" && player >= 0) return { ...base, rack: state.racks[player] };
+  if (state.game === "uno" && player >= 0 && Array.isArray(state.hands)) {
+    return { ...base, hand: state.hands[player] ?? [], opponentCount: state.hands[1 - player]?.length ?? 0, deckCount: state.deck?.length ?? 0 };
+  }
+  if (state.game === "guess-who" && player >= 0 && Array.isArray(state.secrets)) {
+    return { ...base, secret: state.secrets[player] ?? null, flipped: state.flipped?.[player] ?? [] };
+  }
+  if (state.game === "rummikub" && player >= 0 && Array.isArray(state.racks)) {
+    return { ...base, rack: state.racks[player] ?? [], poolCount: state.pool?.length ?? 0 };
+  }
   return base;
 }
 
@@ -331,28 +357,182 @@ function shuffle<T>(items: T[]) {
 
 // ===================== BOT LOGIC =====================
 
-function pickChessMove(fen: string): { from: string; to: string } | null {
+const PIECE_VALUE: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+
+function pickChessMove(fen: string, difficulty: Difficulty): { from: string; to: string } | null {
   const game = new Chess(fen);
   const moves = game.moves({ verbose: true }) as any[];
   if (moves.length === 0) return null;
-  const captures = moves.filter((m) => m.captured);
-  const checks = moves.filter((m) => m.san && m.san.includes("+"));
-  const pool = captures.length > 0 ? captures : checks.length > 0 ? checks : moves;
-  const pick = pool[Math.floor(Math.random() * pool.length)];
-  return { from: pick.from, to: pick.to };
+
+  if (difficulty === "easy") {
+    // Pure random: occasionally throws away material.
+    const pick = moves[Math.floor(Math.random() * moves.length)];
+    return { from: pick.from, to: pick.to };
+  }
+
+  if (difficulty === "medium") {
+    // Prefer captures, then checks, then random.
+    const captures = moves.filter((m) => m.captured);
+    const checks = moves.filter((m) => m.san && m.san.includes("+"));
+    const pool = captures.length > 0 ? captures : checks.length > 0 ? checks : moves;
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    return { from: pick.from, to: pick.to };
+  }
+
+  // Hard: 2-ply minimax with material + mobility scoring.
+  let best: any = null;
+  let bestScore = -Infinity;
+  for (const move of moves) {
+    const probe = new Chess(fen);
+    probe.move({ from: move.from, to: move.to, promotion: move.promotion || "q" });
+    if (probe.isCheckmate()) return { from: move.from, to: move.to };
+    let score = chessMaterial(probe);
+    if (move.san && move.san.includes("+")) score += 0.4;
+    // Opponent's best reply
+    const replies = probe.moves({ verbose: true }) as any[];
+    let worst = Infinity;
+    for (const reply of replies) {
+      const next = new Chess(probe.fen());
+      next.move({ from: reply.from, to: reply.to, promotion: reply.promotion || "q" });
+      const replyScore = chessMaterial(next);
+      if (replyScore < worst) worst = replyScore;
+    }
+    if (replies.length > 0) score = Math.min(score, worst + 0.0001);
+    score += (Math.random() - 0.5) * 0.05;
+    if (score > bestScore) { bestScore = score; best = move; }
+  }
+  return best ? { from: best.from, to: best.to } : { from: moves[0].from, to: moves[0].to };
 }
 
-function pickConnectFourMove(board: number[][], me: number, opp: number): number {
+function chessMaterial(game: Chess): number {
+  // From bot's perspective: bot is whoever just moved (opposite of current turn).
+  const board = game.board();
+  const botColor = game.turn() === "w" ? "b" : "w";
+  let score = 0;
+  for (const row of board) {
+    for (const square of row) {
+      if (!square) continue;
+      const value = PIECE_VALUE[square.type] || 0;
+      score += square.color === botColor ? value : -value;
+    }
+  }
+  return score;
+}
+
+function pickConnectFourMove(board: number[][], me: number, opp: number, difficulty: Difficulty): number {
   const valid = (col: number) => board[0][col] === 0;
   const cols = [0, 1, 2, 3, 4, 5, 6].filter(valid);
   if (cols.length === 0) return -1;
-  // (a) win
-  for (const col of cols) if (simulateWin(board, col, me)) return col;
-  // (b) block
-  for (const col of cols) if (simulateWin(board, col, opp)) return col;
-  // (c) center then random
-  if (cols.includes(3)) return 3;
-  return cols[Math.floor(Math.random() * cols.length)];
+
+  if (difficulty === "easy") {
+    // Half the time take a winning move; otherwise totally random.
+    if (Math.random() < 0.5) {
+      for (const col of cols) if (simulateWin(board, col, me)) return col;
+    }
+    return cols[Math.floor(Math.random() * cols.length)];
+  }
+
+  if (difficulty === "medium") {
+    // Win, block, prefer center, else random.
+    for (const col of cols) if (simulateWin(board, col, me)) return col;
+    for (const col of cols) if (simulateWin(board, col, opp)) return col;
+    if (cols.includes(3)) return 3;
+    return cols[Math.floor(Math.random() * cols.length)];
+  }
+
+  // Hard: minimax with depth 4, alpha-beta.
+  const cloned = board.map((row) => row.slice());
+  const result = c4Minimax(cloned, 4, -Infinity, Infinity, true, me, opp);
+  if (result.col >= 0) return result.col;
+  return cols[0];
+}
+
+function c4Minimax(board: number[][], depth: number, alpha: number, beta: number, maximizing: boolean, me: number, opp: number): { col: number; score: number } {
+  const valid = [0, 1, 2, 3, 4, 5, 6].filter((c) => board[0][c] === 0);
+  // Terminal check
+  const terminal = c4Terminal(board, me, opp);
+  if (terminal !== null || depth === 0 || valid.length === 0) {
+    if (terminal === me) return { col: -1, score: 1_000_000 + depth };
+    if (terminal === opp) return { col: -1, score: -1_000_000 - depth };
+    if (terminal === 0) return { col: -1, score: 0 };
+    return { col: -1, score: c4Heuristic(board, me, opp) };
+  }
+  // Center-first ordering for better pruning.
+  const ordered = valid.slice().sort((a, b) => Math.abs(3 - a) - Math.abs(3 - b));
+  let bestCol = ordered[0];
+  if (maximizing) {
+    let value = -Infinity;
+    for (const col of ordered) {
+      const row = c4Drop(board, col, me);
+      if (row < 0) continue;
+      const next = c4Minimax(board, depth - 1, alpha, beta, false, me, opp).score;
+      board[row][col] = 0;
+      if (next > value) { value = next; bestCol = col; }
+      alpha = Math.max(alpha, value);
+      if (alpha >= beta) break;
+    }
+    return { col: bestCol, score: value };
+  } else {
+    let value = Infinity;
+    for (const col of ordered) {
+      const row = c4Drop(board, col, opp);
+      if (row < 0) continue;
+      const next = c4Minimax(board, depth - 1, alpha, beta, true, me, opp).score;
+      board[row][col] = 0;
+      if (next < value) { value = next; bestCol = col; }
+      beta = Math.min(beta, value);
+      if (alpha >= beta) break;
+    }
+    return { col: bestCol, score: value };
+  }
+}
+
+function c4Drop(board: number[][], col: number, mark: number): number {
+  for (let row = 5; row >= 0; row--) {
+    if (board[row][col] === 0) { board[row][col] = mark; return row; }
+  }
+  return -1;
+}
+
+function c4Terminal(board: number[][], me: number, opp: number): number | null {
+  for (let r = 0; r < 6; r++) {
+    for (let c = 0; c < 7; c++) {
+      const mark = board[r][c];
+      if (mark === 0) continue;
+      if (wins(board, r, c, mark)) return mark;
+    }
+  }
+  for (let c = 0; c < 7; c++) if (board[0][c] === 0) return null;
+  return 0; // draw
+  void me; void opp;
+}
+
+function c4Heuristic(board: number[][], me: number, opp: number): number {
+  let score = 0;
+  // Center column bonus
+  for (let r = 0; r < 6; r++) {
+    if (board[r][3] === me) score += 3;
+    else if (board[r][3] === opp) score -= 3;
+  }
+  // Score every 4-window
+  const lines: number[][][] = [];
+  for (let r = 0; r < 6; r++) for (let c = 0; c < 4; c++) lines.push([[r, c], [r, c + 1], [r, c + 2], [r, c + 3]]);
+  for (let c = 0; c < 7; c++) for (let r = 0; r < 3; r++) lines.push([[r, c], [r + 1, c], [r + 2, c], [r + 3, c]]);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) lines.push([[r, c], [r + 1, c + 1], [r + 2, c + 2], [r + 3, c + 3]]);
+  for (let r = 3; r < 6; r++) for (let c = 0; c < 4; c++) lines.push([[r, c], [r - 1, c + 1], [r - 2, c + 2], [r - 3, c + 3]]);
+  for (const line of lines) {
+    let mine = 0, theirs = 0;
+    for (const [r, c] of line) {
+      if (board[r][c] === me) mine++;
+      else if (board[r][c] === opp) theirs++;
+    }
+    if (mine && theirs) continue;
+    if (mine === 3) score += 5;
+    else if (mine === 2) score += 2;
+    if (theirs === 3) score -= 4;
+    else if (theirs === 2) score -= 2;
+  }
+  return score;
 }
 
 function simulateWin(board: number[][], col: number, mark: number): boolean {
@@ -367,27 +547,51 @@ function simulateWin(board: number[][], col: number, mark: number): boolean {
   return false;
 }
 
-function runUnoBot(state: AnyState, bot: number) {
+function runUnoBot(state: AnyState, bot: number, difficulty: Difficulty) {
   const hand = state.hands[bot] as any[];
   const top = state.top;
-  const playable = hand.findIndex((c) => c.color === "wild" || c.color === top.color || c.value === top.value);
-  if (playable >= 0) {
-    const card = hand[playable];
-    let chosen = card.color;
-    if (card.color === "wild") {
-      const counts: Record<string, number> = { red: 0, yellow: 0, green: 0, blue: 0 };
-      for (const c of hand) if (counts[c.color] !== undefined) counts[c.color]++;
-      chosen = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]) || "red";
-    }
-    uno(state, { type: "play", id: card.id, color: chosen }, bot);
+  const playableIdx: number[] = [];
+  hand.forEach((c, i) => {
+    if (c.color === "wild" || c.color === top.color || c.value === top.value) playableIdx.push(i);
+  });
+
+  if (playableIdx.length === 0) {
+    uno(state, { type: "draw" }, bot);
     return;
   }
-  // draw, then try to play
-  uno(state, { type: "draw" }, bot);
-  // After draw, turn passes to opponent in current rules — that's fine.
+
+  let chosenIdx: number;
+  if (difficulty === "easy") {
+    chosenIdx = playableIdx[Math.floor(Math.random() * playableIdx.length)];
+  } else {
+    // Medium and Hard: prioritize action cards; Hard also saves wilds for when opponent is close to winning.
+    const opponentCount = (state.hands[1 - bot] as any[]).length;
+    const score = (card: any) => {
+      if (card.value === "+2") return 100;
+      if (card.value === "skip") return 90;
+      if (card.value === "reverse") return 85;
+      if (card.color === "wild") return difficulty === "hard" && opponentCount > 3 ? 30 : 80;
+      return 50 + Number(card.value || 0);
+    };
+    chosenIdx = playableIdx.reduce((a, b) => (score(hand[b]) > score(hand[a]) ? b : a));
+  }
+
+  const card = hand[chosenIdx];
+  let chosen = card.color;
+  if (card.color === "wild") {
+    const counts: Record<string, number> = { red: 0, yellow: 0, green: 0, blue: 0 };
+    for (const c of hand) if (counts[c.color] !== undefined) counts[c.color]++;
+    if (difficulty === "easy") {
+      const colors = ["red", "yellow", "green", "blue"];
+      chosen = colors[Math.floor(Math.random() * colors.length)];
+    } else {
+      chosen = (Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]) || "red";
+    }
+  }
+  uno(state, { type: "play", id: card.id, color: chosen }, bot);
 }
 
-function runGuessWhoBot(state: AnyState, bot: number) {
+function runGuessWhoBot(state: AnyState, bot: number, difficulty: Difficulty) {
   // Pick secret if not yet picked
   if (state.secrets[bot] === null) {
     const id = Math.floor(Math.random() * 24);
@@ -396,38 +600,58 @@ function runGuessWhoBot(state: AnyState, bot: number) {
   }
   if (state.secrets.some((s: number | null) => s === null)) return;
   if (state.turn !== bot) return;
-  // Flip a random unflipped person
+
   const flipped: number[] = state.flipped[bot] ?? [];
   const unflipped = Array.from({ length: 24 }, (_, i) => i).filter((i) => !flipped.includes(i));
-  if (unflipped.length > 1) {
-    const id = unflipped[Math.floor(Math.random() * unflipped.length)];
+
+  // Flip count scales with difficulty: easy almost never flips, hard flips
+  // multiple to narrow the field aggressively.
+  const flipsPerTurn = difficulty === "easy" ? (Math.random() < 0.4 ? 1 : 0) : difficulty === "medium" ? 1 : Math.min(3, Math.max(1, Math.floor(unflipped.length / 6)));
+  for (let i = 0; i < flipsPerTurn && unflipped.length > 1; i++) {
+    const idx = Math.floor(Math.random() * unflipped.length);
+    const id = unflipped.splice(idx, 1)[0];
     guessWho(state, { type: "flip", id }, bot);
   }
-  // Ask a binary question (also passes turn)
-  const questions = [
+
+  const easyQuestions = ["Do they look friendly?", "Do you like them?", "Hmm... interesting?"];
+  const goodQuestions = [
     "Do they wear glasses?",
     "Do they have a hat?",
     "Do they have a beard?",
     "Is their hair dark?",
     "Is their skin light?",
   ];
-  const q = questions[Math.floor(Math.random() * questions.length)];
+  const pool = difficulty === "easy" ? easyQuestions : goodQuestions;
+  const q = pool[Math.floor(Math.random() * pool.length)];
   guessWho(state, { type: "ask", question: q }, bot);
 }
 
-function runRummikubBot(state: AnyState, bot: number) {
+function runRummikubBot(state: AnyState, bot: number, difficulty: Difficulty) {
   const rack = state.racks[bot] as any[];
-  // Try to find a valid group of 3 from the rack.
-  const group = findRummikubGroup(rack);
-  if (group) {
-    rummikub(state, { type: "place", ids: group.map((t) => t.id) }, bot);
-    // Check if rack still allows play; otherwise end turn.
-    if (!state.winner && state.turn === bot) {
-      rummikub(state, { type: "end" }, bot);
-    }
+
+  // Easy: only places with 50% chance, otherwise just draws.
+  if (difficulty === "easy" && Math.random() < 0.5) {
+    rummikub(state, { type: "draw" }, bot);
     return;
   }
-  rummikub(state, { type: "draw" }, bot);
+
+  // Hard: keep placing groups in the same turn until none are left.
+  const placeAll = difficulty === "hard";
+  let placed = false;
+  while (true) {
+    const group = findRummikubGroup(state.racks[bot]);
+    if (!group) break;
+    rummikub(state, { type: "place", ids: group.map((t) => t.id) }, bot);
+    placed = true;
+    if (state.winner !== null && state.winner !== undefined) return;
+    if (!placeAll) break;
+  }
+
+  if (placed && state.turn === bot) {
+    rummikub(state, { type: "end" }, bot);
+    return;
+  }
+  if (!placed) rummikub(state, { type: "draw" }, bot);
 }
 
 function findRummikubGroup(rack: any[]): any[] | null {

@@ -25,6 +25,9 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
   const [status, setStatus] = useState("Connecting");
   const searchParams = useSearchParams();
   const vsCpu = searchParams?.get("cpu") === "1";
+  const diffParam = searchParams?.get("diff");
+  const difficulty: "easy" | "medium" | "hard" =
+    diffParam === "easy" || diffParam === "hard" ? diffParam : "medium";
   const socket = useMemo(() => {
     const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST || fallbackHost;
     return new PartySocket({ host, party: partyNames[gameId] || gameId, room: code.toLowerCase() });
@@ -33,12 +36,12 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
   useEffect(() => {
     socket.addEventListener("open", () => {
       setStatus("Connected");
-      if (vsCpu) socket.send(JSON.stringify({ type: "init", vsCpu: true }));
+      if (vsCpu) socket.send(JSON.stringify({ type: "init", vsCpu: true, difficulty }));
     });
     socket.addEventListener("close", () => setStatus("Disconnected"));
     socket.addEventListener("message", (event) => setState(JSON.parse(event.data)));
     return () => socket.close();
-  }, [socket, vsCpu]);
+  }, [socket, vsCpu, difficulty]);
 
   function send(message: Msg) {
     socket.send(JSON.stringify(message));
@@ -61,7 +64,8 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
           })}
         </div>
         {!state?.started && !vsCpu && <p className="mt-5 text-sm leading-6 text-zinc-400">Share this code with one more player. The game starts automatically.</p>}
-        {!state?.started && vsCpu && <p className="mt-5 text-sm leading-6 text-zinc-400">Spinning up CPU opponent...</p>}
+        {vsCpu && <p className="mt-5 text-sm leading-6 text-zinc-400">CPU difficulty: <span className="font-semibold text-fuchsia-300 capitalize">{difficulty}</span></p>}
+        {!state?.started && vsCpu && <p className="mt-2 text-sm leading-6 text-zinc-400">Spinning up CPU opponent...</p>}
         {state?.error && <p className="mt-5 rounded-md border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-200">{state.error}</p>}
       </aside>
       <section className="min-h-[560px] rounded-lg border border-white/10 bg-zinc-950/80 p-4 sm:p-6">
