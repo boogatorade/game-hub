@@ -39,10 +39,10 @@ Set `NEXT_PUBLIC_PARTYKIT_HOST` in Vercel production to the PartyKit host, witho
 Set the Guess Who judge API key in PartyKit before relying on automatic yes/no answers:
 
 ```bash
-npx partykit env add GEMINI_API_KEY
+npx partykit env add XAI_API_KEY
 ```
 
-Paste a Google AI Studio key when prompted (free at https://aistudio.google.com/apikey — `gemini-2.5-flash` is on the free tier). `GOOGLE_API_KEY` is accepted as a fallback name. If the env var is missing the judge gracefully records "judge unavailable" instead of failing the turn.
+Paste an xAI API key when prompted (get one at https://console.x.ai — uses `grok-3-mini`). `GROK_API_KEY` is accepted as a fallback name. If the env var is missing the judge gracefully records "judge unavailable" instead of failing the turn.
 
 ## Game Status
 

@@ -445,24 +445,26 @@ function guessWhoTraits(id: number): string {
 
 async function judgeQuestion(env: Record<string, unknown> | undefined, traits: string, question: string): Promise<"yes" | "no" | "unclear"> {
   const apiKey =
-    (typeof env?.GEMINI_API_KEY === "string" && env.GEMINI_API_KEY) ||
-    (typeof env?.GOOGLE_API_KEY === "string" && env.GOOGLE_API_KEY) ||
+    (typeof env?.XAI_API_KEY === "string" && env.XAI_API_KEY) ||
+    (typeof env?.GROK_API_KEY === "string" && env.GROK_API_KEY) ||
     "";
   if (!apiKey) return "unclear";
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }] }],
-        generationConfig: { maxOutputTokens: 5, temperature: 0 },
-      }),
+  const response = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${apiKey}`,
+      "content-type": "application/json",
     },
-  );
+    body: JSON.stringify({
+      model: "grok-3-mini",
+      max_tokens: 5,
+      temperature: 0,
+      messages: [{ role: "user", content: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }],
+    }),
+  });
   if (!response.ok) return "unclear";
-  const data = await response.json() as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-  const text = String(data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim().toLowerCase().slice(0, 3);
+  const data = await response.json() as { choices?: { message?: { content?: string } }[] };
+  const text = String(data.choices?.[0]?.message?.content || "").trim().toLowerCase().slice(0, 3);
   if (text.startsWith("yes")) return "yes";
   if (text.startsWith("no")) return "no";
   return "unclear";
