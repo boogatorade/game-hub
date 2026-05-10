@@ -445,18 +445,17 @@ function guessWhoTraits(id: number): string {
 
 async function judgeQuestion(env: Record<string, unknown> | undefined, traits: string, question: string): Promise<"yes" | "no" | "unclear"> {
   const apiKey =
-    (typeof env?.XAI_API_KEY === "string" && env.XAI_API_KEY) ||
-    (typeof env?.GROK_API_KEY === "string" && env.GROK_API_KEY) ||
+    (typeof env?.GROQ_API_KEY === "string" && env.GROQ_API_KEY) ||
     "";
   if (!apiKey) return "unclear";
-  const response = await fetch("https://api.x.ai/v1/chat/completions", {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
       "authorization": `Bearer ${apiKey}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "grok-3-mini",
+      model: "llama-3.3-70b-versatile",
       max_tokens: 5,
       temperature: 0,
       messages: [{ role: "user", content: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }],

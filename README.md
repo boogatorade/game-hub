@@ -39,10 +39,10 @@ Set `NEXT_PUBLIC_PARTYKIT_HOST` in Vercel production to the PartyKit host, witho
 Set the Guess Who judge API key in PartyKit before relying on automatic yes/no answers:
 
 ```bash
-npx partykit env add XAI_API_KEY
+npx partykit env add GROQ_API_KEY
 ```
 
-Paste an xAI API key when prompted (get one at https://console.x.ai — uses `grok-3-mini`). `GROK_API_KEY` is accepted as a fallback name. If the env var is missing the judge gracefully records "judge unavailable" instead of failing the turn.
+Paste a Groq API key when prompted (get one free at https://console.groq.com — uses `llama-3.3-70b-versatile`). If the env var is missing the judge gracefully records "judge unavailable" instead of failing the turn.
 
 ## Game Status
 
