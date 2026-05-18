@@ -111,6 +111,7 @@ export default class GameServer implements Party.Server {
       if (this.state.game === "connect-four") connectFour(this.state, msg, player);
       if (this.state.game === "uno") uno(this.state, msg, player);
       if (this.state.game === "rummikub") rummikub(this.state, msg, player);
+      if (this.state.game === "battleship") battleship(this.state, msg, player);
     } catch (error) {
       this.state.error = error instanceof Error ? error.message : "Invalid move";
     }
@@ -124,6 +125,7 @@ export default class GameServer implements Party.Server {
     if (game === "connect-four") this.state = { ...this.base(), board: Array.from({ length: 6 }, () => Array(7).fill(0)), turn: 0, winner: null };
     if (game === "uno") this.state = startUno(this.base());
     if (game === "rummikub") this.state = startRummikub(this.base());
+    if (game === "battleship") this.state = { ...this.base(), phase: "placement", boards: [{ ships: [], shots: [] }, { ships: [], shots: [] }], placements: [false, false], turn: 0, winner: null };
     void this.pingLobby();
   }
 
@@ -191,6 +193,10 @@ export default class GameServer implements Party.Server {
       // turn is "white"/"black"; bot is always player 1 = black in CPU mode.
       return this.state.turn === (bot === 0 ? "white" : "black");
     }
+    if (game === "battleship") {
+      if (this.state.phase === "placement") return !this.state.placements[bot];
+      return this.state.turn === bot;
+    }
     return this.state.turn === bot;
   }
 
@@ -240,6 +246,10 @@ export default class GameServer implements Party.Server {
       runRummikubBot(this.state, bot, difficulty);
       return;
     }
+    if (game === "battleship") {
+      runBattleshipBot(this.state, bot, difficulty);
+      return;
+    }
   }
 }
 
@@ -255,6 +265,23 @@ function view(state: AnyState, player: number) {
   }
   if (state.game === "rummikub" && player >= 0 && Array.isArray(state.racks)) {
     return { ...base, rack: state.racks[player] ?? [], poolCount: state.pool?.length ?? 0 };
+  }
+  if (state.game === "battleship" && player >= 0) {
+    const boards = (state.boards as any[]).map((board: any, i: number) => {
+      const shots = board.shots as string[];
+      const ships = board.ships as number[][][];
+      const shotSet = new Set(shots);
+      const allCells = new Set<string>();
+      for (const ship of ships) for (const [r, c] of ship) allCells.add(`${r},${c}`);
+      const sunkShips = ships.filter((ship: number[][]) => ship.every(([r, c]) => shotSet.has(`${r},${c}`)));
+      if (i === player) {
+        return { ships, shots, sunkShips };
+      } else {
+        const hits = shots.filter((s: string) => allCells.has(s));
+        return { ships: sunkShips, shots, hits };
+      }
+    });
+    return { ...base, boards };
   }
   return base;
 }
@@ -849,4 +876,210 @@ function findRummikubGroup(rack: any[]): any[] | null {
     }
   }
   return null;
+}
+
+// ===================== BATTLESHIP =====================
+
+const BATTLESHIP_FLEET = [5, 4, 3, 3, 2];
+const BATTLESHIP_GRID = 10;
+
+function validateShips(ships: any): ships is number[][][] {
+  if (!Array.isArray(ships) || ships.length !== BATTLESHIP_FLEET.length) return false;
+  const expectedSizes = [...BATTLESHIP_FLEET].sort((a, b) => b - a);
+  const actualSizes = ships.map((s: any) => Array.isArray(s) ? s.length : 0).sort((a, b) => b - a);
+  if (expectedSizes.some((size, i) => size !== actualSizes[i])) return false;
+  const used = new Set<string>();
+  for (const ship of ships) {
+    if (!Array.isArray(ship) || ship.length < 2) return false;
+    for (const cell of ship) {
+      if (!Array.isArray(cell) || cell.length !== 2) return false;
+      const [r, c] = cell;
+      if (!Number.isInteger(r) || !Number.isInteger(c)) return false;
+      if (r < 0 || r >= BATTLESHIP_GRID || c < 0 || c >= BATTLESHIP_GRID) return false;
+      const key = `${r},${c}`;
+      if (used.has(key)) return false;
+      used.add(key);
+    }
+    const rows = new Set(ship.map(([r]: number[]) => r));
+    const cols = new Set(ship.map(([, c]: number[]) => c));
+    if (rows.size === 1) {
+      const sorted = ship.map(([, c]: number[]) => c).sort((a: number, b: number) => a - b);
+      for (let i = 1; i < sorted.length; i++) if (sorted[i] !== sorted[i - 1] + 1) return false;
+    } else if (cols.size === 1) {
+      const sorted = ship.map(([r]: number[]) => r).sort((a: number, b: number) => a - b);
+      for (let i = 1; i < sorted.length; i++) if (sorted[i] !== sorted[i - 1] + 1) return false;
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+function autoPlaceShips(): number[][][] {
+  const sizes = [...BATTLESHIP_FLEET];
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const ships: number[][][] = [];
+    const used = new Set<string>();
+    let ok = true;
+    for (const size of sizes) {
+      let placed = false;
+      for (let tries = 0; tries < 200 && !placed; tries++) {
+        const horizontal = Math.random() < 0.5;
+        const r = Math.floor(Math.random() * (horizontal ? BATTLESHIP_GRID : BATTLESHIP_GRID - size + 1));
+        const c = Math.floor(Math.random() * (horizontal ? BATTLESHIP_GRID - size + 1 : BATTLESHIP_GRID));
+        const cells: number[][] = [];
+        let conflict = false;
+        for (let i = 0; i < size; i++) {
+          const rr = horizontal ? r : r + i;
+          const cc = horizontal ? c + i : c;
+          const key = `${rr},${cc}`;
+          if (used.has(key)) { conflict = true; break; }
+          cells.push([rr, cc]);
+        }
+        if (conflict) continue;
+        for (const [rr, cc] of cells) used.add(`${rr},${cc}`);
+        ships.push(cells);
+        placed = true;
+      }
+      if (!placed) { ok = false; break; }
+    }
+    if (ok) return ships;
+  }
+  throw new Error("Could not auto-place ships");
+}
+
+function battleship(state: AnyState, msg: any, player: number) {
+  if (!state.started) throw new Error("Waiting for both players");
+  if (state.winner !== null && state.winner !== undefined) throw new Error("Game is over");
+
+  if (msg.type === "place") {
+    if (state.phase !== "placement") throw new Error("Placement phase is over");
+    if (state.placements[player]) throw new Error("Already placed");
+    if (!validateShips(msg.ships)) throw new Error("Invalid ship placement");
+    state.boards[player].ships = msg.ships;
+    state.placements[player] = true;
+    if (state.placements[0] && state.placements[1]) {
+      state.phase = "battle";
+      state.turn = 0;
+    }
+    return;
+  }
+
+  if (msg.type === "auto-place") {
+    if (state.phase !== "placement") throw new Error("Placement phase is over");
+    if (state.placements[player]) throw new Error("Already placed");
+    state.boards[player].ships = autoPlaceShips();
+    state.placements[player] = true;
+    if (state.placements[0] && state.placements[1]) {
+      state.phase = "battle";
+      state.turn = 0;
+    }
+    return;
+  }
+
+  if (msg.type === "shoot") {
+    if (state.phase !== "battle") throw new Error("Not in battle phase");
+    if (state.turn !== player) throw new Error("Not your turn");
+    const row = Number(msg.row);
+    const col = Number(msg.col);
+    if (!Number.isInteger(row) || !Number.isInteger(col)) throw new Error("Invalid shot");
+    if (row < 0 || row >= BATTLESHIP_GRID || col < 0 || col >= BATTLESHIP_GRID) throw new Error("Out of bounds");
+    const opponent = 1 - player;
+    const key = `${row},${col}`;
+    const shots: string[] = state.boards[opponent].shots;
+    if (shots.includes(key)) throw new Error("Already shot there");
+    shots.push(key);
+    const allCells = new Set<string>();
+    for (const ship of state.boards[opponent].ships as number[][][]) {
+      for (const [r, c] of ship) allCells.add(`${r},${c}`);
+    }
+    const shotSet = new Set(shots);
+    let remaining = false;
+    for (const cell of allCells) { if (!shotSet.has(cell)) { remaining = true; break; } }
+    if (!remaining) {
+      state.winner = player;
+      state.phase = "complete";
+      return;
+    }
+    state.turn = 1 - player;
+    return;
+  }
+}
+
+function runBattleshipBot(state: AnyState, bot: number, difficulty: Difficulty) {
+  if (state.phase === "placement") {
+    if (!state.placements[bot]) {
+      state.boards[bot].ships = autoPlaceShips();
+      state.placements[bot] = true;
+      if (state.placements[0] && state.placements[1]) {
+        state.phase = "battle";
+        state.turn = 0;
+      }
+    }
+    return;
+  }
+  if (state.phase !== "battle" || state.turn !== bot) return;
+
+  const opponent = 1 - bot;
+  const shots: string[] = state.boards[opponent].shots;
+  const shotSet = new Set(shots);
+  const enemyShips = state.boards[opponent].ships as number[][][];
+  const allCells = new Set<string>();
+  for (const ship of enemyShips) for (const [r, c] of ship) allCells.add(`${r},${c}`);
+  const sunkCells = new Set<string>();
+  for (const ship of enemyShips) {
+    if (ship.every(([r, c]) => shotSet.has(`${r},${c}`))) {
+      for (const [r, c] of ship) sunkCells.add(`${r},${c}`);
+    }
+  }
+
+  let target: [number, number] | null = null;
+
+  if (difficulty !== "easy") {
+    // Find unfinished hits and target their neighbors.
+    const liveHits: string[] = [];
+    for (const s of shots) if (allCells.has(s) && !sunkCells.has(s)) liveHits.push(s);
+    const candidates: [number, number][] = [];
+    for (const hit of liveHits) {
+      const [r, c] = hit.split(",").map(Number);
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr >= BATTLESHIP_GRID || nc < 0 || nc >= BATTLESHIP_GRID) continue;
+        const key = `${nr},${nc}`;
+        if (shotSet.has(key)) continue;
+        candidates.push([nr, nc]);
+      }
+    }
+    if (candidates.length > 0) {
+      target = candidates[Math.floor(Math.random() * candidates.length)];
+    }
+  }
+
+  if (!target) {
+    const open: [number, number][] = [];
+    const checkerboard = difficulty === "hard" || difficulty === "expert";
+    for (let r = 0; r < BATTLESHIP_GRID; r++) {
+      for (let c = 0; c < BATTLESHIP_GRID; c++) {
+        if (shotSet.has(`${r},${c}`)) continue;
+        if (checkerboard && (r + c) % 2 !== 0) continue;
+        open.push([r, c]);
+      }
+    }
+    if (open.length === 0) {
+      // Fall back to any open cell.
+      for (let r = 0; r < BATTLESHIP_GRID; r++) {
+        for (let c = 0; c < BATTLESHIP_GRID; c++) {
+          if (!shotSet.has(`${r},${c}`)) open.push([r, c]);
+        }
+      }
+    }
+    if (open.length > 0) target = open[Math.floor(Math.random() * open.length)];
+  }
+
+  if (!target) return;
+  try {
+    battleship(state, { type: "shoot", row: target[0], col: target[1] }, bot);
+  } catch {
+    // ignore — extremely unlikely after candidate filtering
+  }
 }

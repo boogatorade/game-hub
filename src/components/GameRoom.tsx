@@ -119,6 +119,7 @@ function Renderer({ state, send }: { state: State; send: (message: Msg) => void 
   if (state.game === "chess") return <Chess state={state} send={send} />;
   if (state.game === "connect-four") return <ConnectFour state={state} send={send} />;
   if (state.game === "uno") return <Uno state={state} send={send} />;
+  if (state.game === "battleship") return <Battleship state={state} send={send} />;
   return <Rummikub state={state} send={send} />;
 }
 
@@ -275,6 +276,269 @@ function TileView({ tile }: { tile: Tile }) {
 
 function Info({ text }: { text: string }) {
   return <p className="mb-4 rounded-md border border-white/10 bg-white/[0.04] px-4 py-3 text-sm text-zinc-200">{text}</p>;
+}
+
+type BattleshipBoard = { ships: number[][][]; shots: string[]; sunkShips?: number[][][]; hits?: string[] };
+const BATTLESHIP_FLEET_SIZES = [5, 4, 3, 3, 2];
+const BATTLESHIP_SHIP_NAMES = ["Carrier", "Battleship", "Cruiser", "Submarine", "Destroyer"];
+
+function Battleship({ state, send }: { state: State; send: (message: Msg) => void }) {
+  const phase = state.phase as string;
+  const player = (state.playerIndex ?? -1) as number;
+  if (player < 0) {
+    return <Info text="Spectating Battleship — waiting for players to set up..." />;
+  }
+  if (phase === "placement") return <BattleshipPlacement state={state} send={send} />;
+  return <BattleshipBattle state={state} send={send} />;
+}
+
+function BattleshipPlacement({ state, send }: { state: State; send: (message: Msg) => void }) {
+  const player = (state.playerIndex ?? 0) as number;
+  const placements = state.placements as boolean[];
+  const alreadyPlaced = !!placements?.[player];
+  const [ships, setShips] = useState<number[][][]>([]);
+  const [orientation, setOrientation] = useState<"H" | "V">("H");
+  const [hover, setHover] = useState<[number, number] | null>(null);
+
+  const used = useMemo(() => {
+    const set = new Set<string>();
+    for (const ship of ships) for (const [r, c] of ship) set.add(`${r},${c}`);
+    return set;
+  }, [ships]);
+
+  const nextSize = BATTLESHIP_FLEET_SIZES[ships.length];
+  const nextName = BATTLESHIP_SHIP_NAMES[ships.length];
+
+  function previewCells(r: number, c: number, size: number): number[][] | null {
+    const cells: number[][] = [];
+    for (let i = 0; i < size; i++) {
+      const rr = orientation === "H" ? r : r + i;
+      const cc = orientation === "H" ? c + i : c;
+      if (rr < 0 || rr >= 10 || cc < 0 || cc >= 10) return null;
+      if (used.has(`${rr},${cc}`)) return null;
+      cells.push([rr, cc]);
+    }
+    return cells;
+  }
+
+  function placeAt(r: number, c: number) {
+    if (alreadyPlaced || !nextSize) return;
+    const cells = previewCells(r, c, nextSize);
+    if (!cells) return;
+    setShips([...ships, cells]);
+  }
+
+  function undo() {
+    if (alreadyPlaced) return;
+    setShips(ships.slice(0, -1));
+  }
+
+  function ready() {
+    if (ships.length !== BATTLESHIP_FLEET_SIZES.length) return;
+    send({ type: "place", ships });
+  }
+
+  function autoPlace() {
+    if (alreadyPlaced) return;
+    send({ type: "auto-place" });
+  }
+
+  const previewSet = useMemo(() => {
+    if (!hover || alreadyPlaced || !nextSize) return new Set<string>();
+    const cells = previewCells(hover[0], hover[1], nextSize);
+    if (!cells) return new Set<string>(["__invalid__"]);
+    return new Set(cells.map(([r, c]) => `${r},${c}`));
+  }, [hover, nextSize, orientation, used, alreadyPlaced]);
+
+  const previewInvalid = previewSet.has("__invalid__");
+
+  return (
+    <div className="space-y-4">
+      <Info text={alreadyPlaced ? "Ships placed — waiting for opponent..." : `Place your ${nextName ?? "fleet"} (${nextSize ?? "done"})`} />
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setOrientation((o) => o === "H" ? "V" : "H")}
+          disabled={alreadyPlaced}
+          className="rounded-md border border-white/15 px-3 py-2 text-sm text-zinc-100 hover:border-cyan-300/50 disabled:opacity-40"
+        >
+          Orientation: {orientation === "H" ? "Horizontal" : "Vertical"}
+        </button>
+        <button
+          type="button"
+          onClick={undo}
+          disabled={alreadyPlaced || ships.length === 0}
+          className="rounded-md border border-white/15 px-3 py-2 text-sm text-zinc-100 hover:border-cyan-300/50 disabled:opacity-40"
+        >
+          Undo last
+        </button>
+        <button
+          type="button"
+          onClick={autoPlace}
+          disabled={alreadyPlaced}
+          className="rounded-md border border-white/15 px-3 py-2 text-sm text-zinc-100 hover:border-cyan-300/50 disabled:opacity-40"
+        >
+          Auto-place
+        </button>
+        <button
+          type="button"
+          onClick={ready}
+          disabled={alreadyPlaced || ships.length !== BATTLESHIP_FLEET_SIZES.length}
+          className="rounded-md bg-cyan-300 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-cyan-200 disabled:opacity-40"
+        >
+          Ready
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2 text-xs text-zinc-300">
+        {BATTLESHIP_FLEET_SIZES.map((size, i) => (
+          <span
+            key={i}
+            className={`rounded border border-white/15 px-2 py-1 ${i < ships.length ? "bg-cyan-500/20 text-cyan-100" : i === ships.length ? "bg-white/10 text-white" : "bg-black/30 text-zinc-400"}`}
+          >
+            {BATTLESHIP_SHIP_NAMES[i]} ({size})
+          </span>
+        ))}
+      </div>
+      <div className="inline-block rounded-md border border-white/10 bg-black/30 p-2">
+        <div className="grid grid-cols-10 gap-1">
+          {Array.from({ length: 100 }).map((_, idx) => {
+            const r = Math.floor(idx / 10);
+            const c = idx % 10;
+            const key = `${r},${c}`;
+            const occupied = used.has(key);
+            const isPreview = !previewInvalid && previewSet.has(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={alreadyPlaced}
+                onClick={() => placeAt(r, c)}
+                onMouseEnter={() => setHover([r, c])}
+                onMouseLeave={() => setHover(null)}
+                className={`h-8 w-8 rounded border border-white/10 ${
+                  occupied
+                    ? "bg-cyan-400/70"
+                    : isPreview
+                      ? "bg-cyan-300/30"
+                      : "bg-blue-950/60 hover:bg-blue-900"
+                }`}
+              />
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BattleshipBattle({ state, send }: { state: State; send: (message: Msg) => void }) {
+  const player = (state.playerIndex ?? 0) as number;
+  const opponent = 1 - player;
+  const boards = state.boards as BattleshipBoard[];
+  const myBoard = boards[player];
+  const enemyBoard = boards[opponent];
+  const turn = state.turn as number;
+  const winner = typeof state.winner === "number" ? state.winner : null;
+  const myTurn = winner === null && turn === player;
+
+  const enemyShipCellSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const ship of (enemyBoard.sunkShips ?? []) as number[][][]) {
+      for (const [r, c] of ship) set.add(`${r},${c}`);
+    }
+    return set;
+  }, [enemyBoard.sunkShips]);
+  const enemyHitSet = useMemo(() => new Set(enemyBoard.hits ?? []), [enemyBoard.hits]);
+  const enemyShotSet = useMemo(() => new Set(enemyBoard.shots ?? []), [enemyBoard.shots]);
+  const myShipCells = useMemo(() => {
+    const set = new Set<string>();
+    for (const ship of (myBoard.ships ?? []) as number[][][]) {
+      for (const [r, c] of ship) set.add(`${r},${c}`);
+    }
+    return set;
+  }, [myBoard.ships]);
+  const myShotSet = useMemo(() => new Set(myBoard.shots ?? []), [myBoard.shots]);
+
+  function shoot(r: number, c: number) {
+    if (!myTurn) return;
+    if (enemyShotSet.has(`${r},${c}`)) return;
+    send({ type: "shoot", row: r, col: c });
+  }
+
+  const banner = winner !== null
+    ? winner === player ? "Victory — you sank the enemy fleet!" : "Defeat — your fleet has been sunk."
+    : myTurn ? "Your turn — fire at Enemy Waters." : "Opponent's turn...";
+
+  return (
+    <div className="space-y-4">
+      <Info text={banner} />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div>
+          <p className="mb-2 text-sm font-semibold uppercase tracking-wider text-cyan-300">Your Fleet</p>
+          <div className="inline-block rounded-md border border-white/10 bg-black/30 p-2">
+            <div className="grid grid-cols-10 gap-1">
+              {Array.from({ length: 100 }).map((_, idx) => {
+                const r = Math.floor(idx / 10);
+                const c = idx % 10;
+                const key = `${r},${c}`;
+                const isShip = myShipCells.has(key);
+                const isShot = enemyShotSet.has(key);
+                const isHit = isShot && isShip;
+                return (
+                  <div
+                    key={key}
+                    className={`h-8 w-8 rounded border border-white/10 ${
+                      isHit
+                        ? "bg-red-500"
+                        : isShot
+                          ? "bg-zinc-500/60"
+                          : isShip
+                            ? "bg-cyan-400/70"
+                            : "bg-blue-950/60"
+                    }`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <div>
+          <p className="mb-2 text-sm font-semibold uppercase tracking-wider text-fuchsia-300">Enemy Waters</p>
+          <div className="inline-block rounded-md border border-white/10 bg-black/30 p-2">
+            <div className="grid grid-cols-10 gap-1">
+              {Array.from({ length: 100 }).map((_, idx) => {
+                const r = Math.floor(idx / 10);
+                const c = idx % 10;
+                const key = `${r},${c}`;
+                const shot = myShotSet.has(key);
+                const hit = shot && enemyHitSet.has(key);
+                const sunk = shot && enemyShipCellSet.has(key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    disabled={!myTurn || shot}
+                    onClick={() => shoot(r, c)}
+                    className={`h-8 w-8 rounded border border-white/10 ${
+                      sunk
+                        ? "bg-orange-500"
+                        : hit
+                          ? "bg-red-500"
+                          : shot
+                            ? "bg-zinc-500/60"
+                            : myTurn
+                              ? "bg-blue-950/60 hover:bg-blue-800"
+                              : "bg-blue-950/60"
+                    }`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ChatPanel({ state, send }: { state: State; send: (message: Msg) => void }) {
