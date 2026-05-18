@@ -7,18 +7,20 @@ const makeRoomCode = customAlphabet("ABCDEFGHJKMNPQRSTUVWXYZ23456789", 6);
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
-type Difficulty = "easy" | "medium" | "hard";
+type Difficulty = "easy" | "medium" | "hard" | "expert";
 
 const difficultyOptions: { id: Difficulty; label: string; blurb: string }[] = [
   { id: "easy", label: "Easy", blurb: "Plays casually. Mostly random moves." },
   { id: "medium", label: "Medium", blurb: "Looks one move ahead. Wins, blocks, plays solidly." },
   { id: "hard", label: "Hard", blurb: "Searches deeper. Will punish mistakes." },
+  { id: "expert", label: "Expert", blurb: "Deeper search, punishes inaccuracies." },
 ];
 
 export function RoomLauncher({ gameId }: { gameId: string }) {
   const router = useRouter();
   const [code, setCode] = useState("");
   const [difficulty, setDifficulty] = useState<Difficulty>("medium");
+  const visibleDifficulties = difficultyOptions.filter((option) => option.id !== "expert" || gameId === "chess");
 
   function createRoom() {
     router.push(`/games/${gameId}/${makeRoomCode()}`);
@@ -54,8 +56,8 @@ export function RoomLauncher({ gameId }: { gameId: string }) {
 
       <div className="rounded-lg border border-white/10 bg-black/20 p-5">
         <p className="text-sm uppercase tracking-[0.2em] text-fuchsia-300">Play vs CPU</p>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3">
-          {difficultyOptions.map((option) => {
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {visibleDifficulties.map((option) => {
             const active = difficulty === option.id;
             return (
               <button

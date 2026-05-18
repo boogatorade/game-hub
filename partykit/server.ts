@@ -3,7 +3,7 @@ import { Chess } from "chess.js";
 
 type Conn = Party.Connection<{ player?: number }>;
 type Player = { id: string; bot?: boolean };
-type Difficulty = "easy" | "medium" | "hard";
+type Difficulty = "easy" | "medium" | "hard" | "expert";
 type ChatState = {
   status: "idle" | "pending" | "active";
   requestedBy: number | null;
@@ -23,7 +23,8 @@ type AnyState = Record<string, any> & {
 const BOT_ID = "__cpu_bot__";
 
 function normalizeDifficulty(value: unknown): Difficulty {
-  return value === "easy" || value === "hard" ? value : "medium";
+  if (value === "easy" || value === "hard" || value === "expert") return value;
+  return "medium";
 }
 
 export default class GameServer implements Party.Server {
@@ -489,6 +490,21 @@ function pickChessMove(fen: string, difficulty: Difficulty): { from: string; to:
     return { from: pick.from, to: pick.to };
   }
 
+  if (difficulty === "expert") {
+    // Alpha-beta minimax depth 3 with positional eval.
+    const botColor = game.turn();
+    let best: any = null;
+    let bestScore = -Infinity;
+    for (const move of moves) {
+      const probe = new Chess(fen);
+      probe.move({ from: move.from, to: move.to, promotion: move.promotion || "q" });
+      if (probe.isCheckmate()) return { from: move.from, to: move.to };
+      const score = -chessNegamax(probe, 2, -Infinity, Infinity, botColor) + (Math.random() - 0.5) * 0.02;
+      if (score > bestScore) { bestScore = score; best = move; }
+    }
+    return best ? { from: best.from, to: best.to } : { from: moves[0].from, to: moves[0].to };
+  }
+
   // Hard: 2-ply minimax with material + mobility scoring.
   let best: any = null;
   let bestScore = -Infinity;
@@ -514,6 +530,68 @@ function pickChessMove(fen: string, difficulty: Difficulty): { from: string; to:
   return best ? { from: best.from, to: best.to } : { from: moves[0].from, to: moves[0].to };
 }
 
+// Negamax with alpha-beta. Returns score from perspective of side to move in `game`.
+// `botColor` is the original bot's color ("w"/"b") so leaf eval stays consistent.
+function chessNegamax(game: Chess, depth: number, alpha: number, beta: number, botColor: "w" | "b"): number {
+  if (game.isCheckmate()) {
+    // The side to move is checkmated — bad for the side to move.
+    return -100000 - depth;
+  }
+  if (game.isDraw() || game.isStalemate() || game.isThreefoldRepetition() || game.isInsufficientMaterial()) {
+    return 0;
+  }
+  if (depth === 0) {
+    const score = chessEval(game, botColor);
+    return game.turn() === botColor ? score : -score;
+  }
+  const moves = game.moves({ verbose: true }) as any[];
+  if (moves.length === 0) return 0;
+  // Move ordering: captures first, then checks.
+  moves.sort((a, b) => {
+    const aCap = a.captured ? (PIECE_VALUE[a.captured] || 0) : 0;
+    const bCap = b.captured ? (PIECE_VALUE[b.captured] || 0) : 0;
+    return bCap - aCap;
+  });
+  let value = -Infinity;
+  for (const move of moves) {
+    const next = new Chess(game.fen());
+    next.move({ from: move.from, to: move.to, promotion: move.promotion || "q" });
+    const score = -chessNegamax(next, depth - 1, -beta, -alpha, botColor);
+    if (score > value) value = score;
+    if (value > alpha) alpha = value;
+    if (alpha >= beta) break;
+  }
+  return value;
+}
+
+// Center-square bonus for piece-square table approximation.
+const CENTER_BONUS: Record<string, number> = {
+  d4: 0.3, e4: 0.3, d5: 0.3, e5: 0.3,
+  c4: 0.15, f4: 0.15, c5: 0.15, f5: 0.15,
+  d3: 0.15, e3: 0.15, d6: 0.15, e6: 0.15,
+};
+
+// Positional eval from `botColor`'s perspective: material + center control + mobility.
+function chessEval(game: Chess, botColor: "w" | "b"): number {
+  const board = game.board();
+  let score = 0;
+  for (const row of board) {
+    for (const square of row) {
+      if (!square) continue;
+      const value = PIECE_VALUE[square.type] || 0;
+      const sign = square.color === botColor ? 1 : -1;
+      score += sign * value;
+      const bonus = CENTER_BONUS[square.square] || 0;
+      if (bonus) score += sign * bonus;
+    }
+  }
+  // Mobility: legal-move count from current side's perspective.
+  const moveCount = (game.moves() as string[]).length;
+  const mobilitySign = game.turn() === botColor ? 1 : -1;
+  score += mobilitySign * moveCount * 0.03;
+  return score;
+}
+
 function chessMaterial(game: Chess): number {
   // From bot's perspective: bot is whoever just moved (opposite of current turn).
   const board = game.board();
@@ -530,6 +608,7 @@ function chessMaterial(game: Chess): number {
 }
 
 function pickConnectFourMove(board: number[][], me: number, opp: number, difficulty: Difficulty): number {
+  if (difficulty === "expert") difficulty = "hard";
   const valid = (col: number) => board[0][col] === 0;
   const cols = [0, 1, 2, 3, 4, 5, 6].filter(valid);
   if (cols.length === 0) return -1;
@@ -672,6 +751,7 @@ function simulateWin(board: number[][], col: number, mark: number): boolean {
 }
 
 function runUnoBot(state: AnyState, bot: number, difficulty: Difficulty) {
+  if (difficulty === "expert") difficulty = "hard";
   const hand = state.hands[bot] as any[];
   const top = state.top;
   const playableIdx: number[] = [];
@@ -716,6 +796,7 @@ function runUnoBot(state: AnyState, bot: number, difficulty: Difficulty) {
 }
 
 function runRummikubBot(state: AnyState, bot: number, difficulty: Difficulty) {
+  if (difficulty === "expert") difficulty = "hard";
   const rack = state.racks[bot] as any[];
 
   // Easy: only places with 50% chance, otherwise just draws.

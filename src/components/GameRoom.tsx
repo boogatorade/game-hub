@@ -35,8 +35,8 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
   const searchParams = useSearchParams();
   const vsCpu = searchParams?.get("cpu") === "1";
   const diffParam = searchParams?.get("diff");
-  const difficulty: "easy" | "medium" | "hard" =
-    diffParam === "easy" || diffParam === "hard" ? diffParam : "medium";
+  const difficulty: "easy" | "medium" | "hard" | "expert" =
+    diffParam === "easy" || diffParam === "hard" || diffParam === "expert" ? diffParam : "medium";
   const socket = useMemo(() => {
     const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST || fallbackHost;
     return new PartySocket({ host, party: partyNames[gameId] || gameId, room: code.toLowerCase() });
