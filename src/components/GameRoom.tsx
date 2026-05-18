@@ -25,8 +25,7 @@ type ChatState = {
 };
 
 const fallbackHost = typeof window !== "undefined" ? `${window.location.hostname}:1999` : "localhost:1999";
-const partyNames: Record<string, string> = { "connect-four": "connectfour", "guess-who": "guesswho" };
-const GUESS_WHO_COUNT_KEY = "game-hub-guesswho-count";
+const partyNames: Record<string, string> = { "connect-four": "connectfour" };
 
 export function GameRoom({ gameId, code, title }: { gameId: string; code: string; title: string }) {
   const [state, setState] = useState<State | null>(null);
@@ -52,15 +51,6 @@ export function GameRoom({ gameId, code, title }: { gameId: string; code: string
     socket.addEventListener("message", (event) => setState(JSON.parse(event.data)));
     return () => socket.close();
   }, [socket, vsCpu, difficulty]);
-
-  useEffect(() => {
-    if (!state?.started || state.game !== "guess-who") return;
-    const sessionKey = `${GUESS_WHO_COUNT_KEY}:${code.toLowerCase()}`;
-    if (sessionStorage.getItem(sessionKey)) return;
-    sessionStorage.setItem(sessionKey, "1");
-    const current = Number(localStorage.getItem(GUESS_WHO_COUNT_KEY) || 0);
-    localStorage.setItem(GUESS_WHO_COUNT_KEY, String(current + 1));
-  }, [code, state?.game, state?.started]);
 
   function send(message: Msg) {
     socket.send(JSON.stringify(message));
@@ -129,7 +119,6 @@ function Renderer({ state, send }: { state: State; send: (message: Msg) => void 
   if (state.game === "chess") return <Chess state={state} send={send} />;
   if (state.game === "connect-four") return <ConnectFour state={state} send={send} />;
   if (state.game === "uno") return <Uno state={state} send={send} />;
-  if (state.game === "guess-who") return <GuessWho state={state} send={send} />;
   return <Rummikub state={state} send={send} />;
 }
 
@@ -240,51 +229,6 @@ const colors = ["red", "yellow", "green", "blue"];
 const cardColors: Record<string, string> = { red: "bg-red-500", yellow: "bg-yellow-300 text-zinc-950", green: "bg-green-500", blue: "bg-blue-500", wild: "bg-zinc-900" };
 function CardView({ card }: { card: Card }) {
   return <div className={`grid h-28 w-20 place-items-center rounded-lg border-2 border-white/80 ${cardColors[card.color]} text-lg font-black shadow-lg`}><span>{card.value}</span></div>;
-}
-
-const people = Array.from({ length: 24 }, (_, i) => ({
-  id: i,
-  skin: ["#f3c7a4", "#c98862", "#7a4a33", "#f0b38b"][i % 4],
-  hair: ["#111827", "#7c2d12", "#facc15", "#6b7280"][i % 4],
-  glasses: i % 3 === 0,
-  hat: i % 5 === 0,
-  beard: i % 4 === 0,
-}));
-
-function GuessWho({ state, send }: { state: State; send: (message: Msg) => void }) {
-  const [question, setQuestion] = useState("");
-  const flipped = new Set((state.flipped as number[]) ?? []);
-  return (
-    <div className="space-y-5">
-      <Info text={state.secret === undefined ? "Pick your secret character" : `Your secret is #${Number(state.secret) + 1}. Turn: Player ${Number(state.turn) + 1}`} />
-      <form className="flex gap-3" onSubmit={(event) => { event.preventDefault(); send({ type: "ask", question }); setQuestion(""); }}>
-        <input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ask a yes/no question" className="min-w-0 flex-1 rounded-md border border-white/10 bg-black/30 px-3 py-2 text-white" />
-        <button className="rounded-md bg-white px-4 py-2 font-semibold text-zinc-950">Ask</button>
-      </form>
-      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-        {people.map((person) => (
-          <button key={person.id} onClick={() => state.secret === undefined ? send({ type: "secret", id: person.id }) : (play("flip"), send({ type: "flip", id: person.id }))} className={`rounded-md border border-white/10 p-2 ${flipped.has(person.id) ? "opacity-25" : ""}`}>
-            <Avatar person={person} />
-            <span className="text-xs text-zinc-400">#{person.id + 1}</span>
-          </button>
-        ))}
-      </div>
-      <div className="space-y-2 text-sm text-zinc-300">{((state.log as string[]) ?? []).slice(-6).map((line, i) => <p key={i}>{line}</p>)}</div>
-    </div>
-  );
-}
-
-function Avatar({ person }: { person: (typeof people)[number] }) {
-  return (
-    <svg viewBox="0 0 80 80" className="mx-auto h-20 w-20 rounded bg-zinc-900">
-      {person.hat && <rect x="18" y="8" width="44" height="12" rx="3" fill="#0f766e" />}
-      <circle cx="40" cy="42" r="22" fill={person.skin} />
-      <path d="M20 34 Q40 10 60 34 V24 Q40 4 20 24Z" fill={person.hair} />
-      <circle cx="32" cy="42" r="3" fill="#111827" /><circle cx="48" cy="42" r="3" fill="#111827" />
-      {person.glasses && <path d="M24 40h16v9H24zM40 44h4M44 40h16v9H44z" fill="none" stroke="#111827" strokeWidth="2" />}
-      {person.beard && <path d="M25 52 Q40 72 55 52 Q50 64 40 66 Q30 64 25 52" fill={person.hair} />}
-    </svg>
-  );
 }
 
 function Rummikub({ state, send }: { state: State; send: (message: Msg) => void }) {

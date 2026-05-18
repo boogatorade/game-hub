@@ -7,7 +7,6 @@
     "chess": "partykit/server.ts",
     "connectfour": "partykit/server.ts",
     "uno": "partykit/server.ts",
-    "guesswho": "partykit/server.ts",
     "rummikub": "partykit/server.ts",
     "lobby": "partykit/lobby.ts"
   },

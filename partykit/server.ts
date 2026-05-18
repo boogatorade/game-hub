@@ -30,7 +30,7 @@ export default class GameServer implements Party.Server {
   state: AnyState;
   botScheduled = false;
   constructor(readonly room: Party.Room) {
-    const publicName: Record<string, string> = { connectfour: "connect-four", guesswho: "guess-who" };
+    const publicName: Record<string, string> = { connectfour: "connect-four" };
     this.state = { game: publicName[room.name] || room.name, players: [], started: false };
   }
 
@@ -109,7 +109,6 @@ export default class GameServer implements Party.Server {
       if (this.state.game === "chess") chess(this.state, msg, player);
       if (this.state.game === "connect-four") connectFour(this.state, msg, player);
       if (this.state.game === "uno") uno(this.state, msg, player);
-      if (this.state.game === "guess-who") guessWho(this.state, msg, player, this.room.env, () => this.sendAll());
       if (this.state.game === "rummikub") rummikub(this.state, msg, player);
     } catch (error) {
       this.state.error = error instanceof Error ? error.message : "Invalid move";
@@ -123,7 +122,6 @@ export default class GameServer implements Party.Server {
     if (game === "chess") this.state = { ...this.base(), fen: new Chess().fen(), turn: "white", over: false, winner: null };
     if (game === "connect-four") this.state = { ...this.base(), board: Array.from({ length: 6 }, () => Array(7).fill(0)), turn: 0, winner: null };
     if (game === "uno") this.state = startUno(this.base());
-    if (game === "guess-who") this.state = { ...this.base(), secrets: [null, null], flipped: [[], []], turn: 0, log: [] };
     if (game === "rummikub") this.state = startRummikub(this.base());
     void this.pingLobby();
   }
@@ -192,11 +190,6 @@ export default class GameServer implements Party.Server {
       // turn is "white"/"black"; bot is always player 1 = black in CPU mode.
       return this.state.turn === (bot === 0 ? "white" : "black");
     }
-    if (game === "guess-who") {
-      // bot also needs to set its secret first
-      if (this.state.secrets && this.state.secrets[bot] === null) return true;
-      return this.state.turn === bot;
-    }
     return this.state.turn === bot;
   }
 
@@ -242,10 +235,6 @@ export default class GameServer implements Party.Server {
       runUnoBot(this.state, bot, difficulty);
       return;
     }
-    if (game === "guess-who") {
-      runGuessWhoBot(this.state, bot, difficulty, this.room.env, () => this.sendAll());
-      return;
-    }
     if (game === "rummikub") {
       runRummikubBot(this.state, bot, difficulty);
       return;
@@ -262,9 +251,6 @@ function view(state: AnyState, player: number) {
   delete base.racks;
   if (state.game === "uno" && player >= 0 && Array.isArray(state.hands)) {
     return { ...base, hand: state.hands[player] ?? [], opponentCount: state.hands[1 - player]?.length ?? 0, deckCount: state.deck?.length ?? 0 };
-  }
-  if (state.game === "guess-who" && player >= 0 && Array.isArray(state.secrets)) {
-    return { ...base, secret: state.secrets[player] ?? null, flipped: state.flipped?.[player] ?? [] };
   }
   if (state.game === "rummikub" && player >= 0 && Array.isArray(state.racks)) {
     return { ...base, rack: state.racks[player] ?? [], poolCount: state.pool?.length ?? 0 };
@@ -397,76 +383,6 @@ function uno(state: AnyState, msg: any, player: number) {
   const skip = ["skip", "reverse", "+2", "wild"].includes(card.value);
   if (card.value === "+2") state.hands[1 - player].push(...state.deck.splice(0, 2));
   state.turn = skip ? player : 1 - player;
-}
-
-function guessWho(state: AnyState, msg: any, player: number, env?: Record<string, unknown>, notify?: () => void) {
-  if (msg.type === "secret" && state.secrets[player] === null) state.secrets[player] = Number(msg.id);
-  if (state.secrets.some((x: number | null) => x === null)) return;
-  if (msg.type === "flip") {
-    const id = Number(msg.id);
-    if (!state.flipped[player].includes(id)) state.flipped[player].push(id);
-  }
-  if (msg.type === "ask") {
-    if (state.turn !== player) throw new Error("Not your turn");
-    const question = String(msg.question || "").slice(0, 120);
-    if (question) {
-      state.log.push(`Player ${player + 1}: ${question}`);
-      const secret = state.secrets[1 - player];
-      if (typeof secret === "number") {
-        state.judgeCalls = Number(state.judgeCalls || 0);
-        if (state.judgeCalls < 100) {
-          state.judgeCalls++;
-          void judgeQuestion(env, guessWhoTraits(secret), question).then((answer) => {
-            if (answer === "unclear") state.log.push(`Player ${1 - player + 1} couldn't answer (judge unavailable)`);
-            else state.log.push(`Player ${1 - player + 1} answers: ${answer}`);
-            notify?.();
-          }).catch(() => {
-            state.log.push(`Player ${1 - player + 1} couldn't answer (judge unavailable)`);
-            notify?.();
-          });
-        }
-      }
-    }
-    state.turn = 1 - player;
-  }
-}
-
-function guessWhoTraits(id: number): string {
-  const skins = ["light skin", "medium skin", "dark skin", "tan skin"];
-  const hair = ["dark hair", "auburn hair", "blond hair", "gray hair"];
-  return [
-    `The character has ${hair[id % 4]}`,
-    id % 3 === 0 ? "glasses" : "no glasses",
-    id % 5 === 0 ? "a hat" : "no hat",
-    id % 4 === 0 ? "a beard" : "no beard",
-    skins[id % 4],
-  ].join(", ");
-}
-
-async function judgeQuestion(env: Record<string, unknown> | undefined, traits: string, question: string): Promise<"yes" | "no" | "unclear"> {
-  const apiKey =
-    (typeof env?.GROQ_API_KEY === "string" && env.GROQ_API_KEY) ||
-    "";
-  if (!apiKey) return "unclear";
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "authorization": `Bearer ${apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      max_tokens: 5,
-      temperature: 0,
-      messages: [{ role: "user", content: `Character traits: ${traits}. Question: "${question}". Answer with exactly one word: "yes" or "no".` }],
-    }),
-  });
-  if (!response.ok) return "unclear";
-  const data = await response.json() as { choices?: { message?: { content?: string } }[] };
-  const text = String(data.choices?.[0]?.message?.content || "").trim().toLowerCase().slice(0, 3);
-  if (text.startsWith("yes")) return "yes";
-  if (text.startsWith("no")) return "no";
-  return "unclear";
 }
 
 function startRummikub(base: AnyState) {
@@ -797,41 +713,6 @@ function runUnoBot(state: AnyState, bot: number, difficulty: Difficulty) {
     }
   }
   uno(state, { type: "play", id: card.id, color: chosen }, bot);
-}
-
-function runGuessWhoBot(state: AnyState, bot: number, difficulty: Difficulty, env?: Record<string, unknown>, notify?: () => void) {
-  // Pick secret if not yet picked
-  if (state.secrets[bot] === null) {
-    const id = Math.floor(Math.random() * 24);
-    guessWho(state, { type: "secret", id }, bot, env, notify);
-    return;
-  }
-  if (state.secrets.some((s: number | null) => s === null)) return;
-  if (state.turn !== bot) return;
-
-  const flipped: number[] = state.flipped[bot] ?? [];
-  const unflipped = Array.from({ length: 24 }, (_, i) => i).filter((i) => !flipped.includes(i));
-
-  // Flip count scales with difficulty: easy almost never flips, hard flips
-  // multiple to narrow the field aggressively.
-  const flipsPerTurn = difficulty === "easy" ? (Math.random() < 0.4 ? 1 : 0) : difficulty === "medium" ? 1 : Math.min(3, Math.max(1, Math.floor(unflipped.length / 6)));
-  for (let i = 0; i < flipsPerTurn && unflipped.length > 1; i++) {
-    const idx = Math.floor(Math.random() * unflipped.length);
-    const id = unflipped.splice(idx, 1)[0];
-    guessWho(state, { type: "flip", id }, bot, env, notify);
-  }
-
-  const easyQuestions = ["Do they look friendly?", "Do you like them?", "Hmm... interesting?"];
-  const goodQuestions = [
-    "Do they wear glasses?",
-    "Do they have a hat?",
-    "Do they have a beard?",
-    "Is their hair dark?",
-    "Is their skin light?",
-  ];
-  const pool = difficulty === "easy" ? easyQuestions : goodQuestions;
-  const q = pool[Math.floor(Math.random() * pool.length)];
-  guessWho(state, { type: "ask", question: q }, bot, env, notify);
 }
 
 function runRummikubBot(state: AnyState, bot: number, difficulty: Difficulty) {

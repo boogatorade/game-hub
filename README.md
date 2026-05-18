@@ -9,7 +9,6 @@ PartyKit is the realtime backend. The Next.js app connects with `NEXT_PUBLIC_PAR
 - `chess`
 - `connectfour` for the public `connect-four` game
 - `uno`
-- `guesswho` for the public `guess-who` game
 - `rummikub`
 
 No fallback backend was used.
@@ -36,20 +35,11 @@ vercel --prod --yes
 
 Set `NEXT_PUBLIC_PARTYKIT_HOST` in Vercel production to the PartyKit host, without protocol.
 
-Set the Guess Who judge API key in PartyKit before relying on automatic yes/no answers:
-
-```bash
-npx partykit env add GROQ_API_KEY
-```
-
-Paste a Groq API key when prompted (get one free at https://console.groq.com — uses `llama-3.3-70b-versatile`). If the env var is missing the judge gracefully records "judge unavailable" instead of failing the turn.
-
 ## Game Status
 
 - Chess: working. Server validates moves with `chess.js`.
 - Connect Four: working. Server validates drops and wins.
 - Uno: partial but playable. Server validates color/value/wild matches and action effects. Hands are private per player, but stacking/challenge rules are omitted.
-- Guess Who: partial but playable. Server tracks secret picks, per-player flips, questions, and turns. Yes/no questions can be answered by the PartyKit Anthropic judge when `ANTHROPIC_API_KEY` is configured.
 - Rummikub: partial. Server supports drawing, placing same-number sets or same-color runs, adding tiles to existing table groups, and ending turns. Full table rearrangement and initial meld scoring are omitted.
 
 ## Stripe

@@ -5,8 +5,8 @@
 import PartySocket from "partysocket";
 
 const HOST = (process.argv.find((a) => a.startsWith("--host=")) || "--host=127.0.0.1:1999").split("=")[1];
-const PARTIES = { chess: "chess", "connect-four": "connectfour", uno: "uno", "guess-who": "guesswho", rummikub: "rummikub" };
-const GAMES = ["chess", "connect-four", "uno", "guess-who", "rummikub"];
+const PARTIES = { chess: "chess", "connect-four": "connectfour", uno: "uno", rummikub: "rummikub" };
+const GAMES = ["chess", "connect-four", "uno", "rummikub"];
 const DIFFS = ["easy", "medium", "hard"];
 
 let pass = 0, fail = 0;
@@ -78,13 +78,6 @@ async function testTwoPlayer(game) {
   } else if (game === "uno") {
     a.send({ type: "draw" });
     await b.next((s) => s.started && s.turn === 1);
-  } else if (game === "guess-who") {
-    a.send({ type: "secret", id: 0 });
-    b.send({ type: "secret", id: 1 });
-    // After both secrets are set, asks become legal. Wait until B sees its own secret = 1.
-    await b.next((s) => s.started && Number(s.secret) === 1, 5000);
-    a.send({ type: "ask", question: "test?" });
-    await b.next((s) => s.started && Array.isArray(s.log) && s.log.length > 0, 5000);
   } else if (game === "rummikub") {
     a.send({ type: "draw" });
     await b.next((s) => s.started && s.turn === 1);
@@ -135,13 +128,6 @@ async function testCpu(game, difficulty) {
     // Play first by drawing; bot then plays/draws and we go again.
     a.send({ type: "draw" });
     await a.next((s) => s.started && s.turn === 0 && Array.isArray(s.hand), 8000);
-  } else if (game === "guess-who") {
-    // Bot needs to set its own secret asynchronously after start.
-    await a.next((s) => s.started && Array.isArray(s.bots) && s.bots[1], 5000);
-    // Set our secret; once both are set the bot will ask on its turn.
-    a.send({ type: "secret", id: 0 });
-    // Wait for bot's question OR for turn to come back to us.
-    await a.next((s) => (Array.isArray(s.log) && s.log.length > 0) || s.turn === 0, 8000);
   } else if (game === "rummikub") {
     a.send({ type: "end" });
     await a.next((s) => s.started && s.turn === 0, 8000);
