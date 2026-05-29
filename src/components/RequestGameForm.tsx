@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { FormEvent } from "react";
 
 type Status =
   | { kind: "idle" }
@@ -14,7 +15,7 @@ export function RequestGameForm() {
   const [idea, setIdea] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!idea.trim()) {
       setStatus({ kind: "error", message: "Please describe a game." });
@@ -45,42 +46,34 @@ export function RequestGameForm() {
   }
 
   const sending = status.kind === "sending";
-  const inputClass =
-    "w-full rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white placeholder:text-zinc-500 focus:border-cyan-300/60 focus:outline-none focus:ring-1 focus:ring-cyan-300/40";
-
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="rounded-lg border border-white/10 bg-zinc-950/80 p-5 sm:p-6"
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="block">
-          <span className="text-xs uppercase tracking-[0.2em] text-zinc-400">Name (optional)</span>
+    <form onSubmit={handleSubmit} className="request-form">
+      <div className="request-grid">
+        <label>
+          <span>Name (optional)</span>
           <input
             type="text"
             value={name}
             onChange={(e) => setName(e.target.value)}
             maxLength={200}
             disabled={sending}
-            className={`${inputClass} mt-2`}
             placeholder="Your name"
           />
         </label>
-        <label className="block">
-          <span className="text-xs uppercase tracking-[0.2em] text-zinc-400">Email (optional)</span>
+        <label>
+          <span>Email (optional)</span>
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             maxLength={320}
             disabled={sending}
-            className={`${inputClass} mt-2`}
             placeholder="you@example.com"
           />
         </label>
       </div>
-      <label className="mt-4 block">
-        <span className="text-xs uppercase tracking-[0.2em] text-zinc-400">Game idea</span>
+      <label>
+        <span>Game idea</span>
         <textarea
           value={idea}
           onChange={(e) => setIdea(e.target.value)}
@@ -88,23 +81,22 @@ export function RequestGameForm() {
           maxLength={5000}
           rows={5}
           disabled={sending}
-          className={`${inputClass} mt-2 resize-y`}
           placeholder="What game would you like to see? Rules, theme, anything."
         />
       </label>
-      <div className="mt-5 flex flex-wrap items-center gap-4">
+      <div className="request-actions">
         <button
           type="submit"
           disabled={sending || !idea.trim()}
-          className="inline-flex items-center rounded-md bg-white px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-200 disabled:cursor-not-allowed disabled:bg-zinc-600 disabled:text-zinc-300"
+          className="primary-btn"
         >
           {sending ? "Sending..." : "Send request"}
         </button>
         {status.kind === "success" && (
-          <p className="text-sm text-cyan-300">Thanks - your request is on its way.</p>
+          <p className="form-status success">Thanks - your request is on its way.</p>
         )}
         {status.kind === "error" && (
-          <p className="text-sm text-red-300">{status.message}</p>
+          <p className="form-status error">{status.message}</p>
         )}
       </div>
     </form>

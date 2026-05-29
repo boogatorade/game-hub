@@ -2,6 +2,8 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
+import { games } from "@/lib/games";
 
 type ActiveRoom = {
   game: string;
@@ -15,13 +17,14 @@ type LobbyResponse = { rooms?: ActiveRoom[] };
 
 const fallbackHost = typeof window !== "undefined" ? `${window.location.hostname}:1999` : "localhost:1999";
 
-function lobbyUrl(gameId: string) {
+function lobbyUrl(gameId?: string) {
   const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST || fallbackHost;
   const protocol = host.startsWith("localhost") || host.startsWith("127.0.0.1") ? "http" : "https";
-  return `${protocol}://${host}/parties/lobby/default?game=${encodeURIComponent(gameId)}`;
+  const query = gameId ? `?game=${encodeURIComponent(gameId)}` : "";
+  return `${protocol}://${host}/parties/lobby/default${query}`;
 }
 
-export function ActiveRooms({ gameId }: { gameId: string }) {
+export function ActiveRooms({ gameId }: { gameId?: string }) {
   const router = useRouter();
   const [rooms, setRooms] = useState<ActiveRoom[]>([]);
   const [failed, setFailed] = useState(false);
@@ -51,30 +54,39 @@ export function ActiveRooms({ gameId }: { gameId: string }) {
   }, [gameId]);
 
   return (
-    <section className="mt-8 rounded-lg border border-white/10 bg-black/20 p-5">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-cyan-300">Currently active rooms</h2>
-        {failed ? <span className="text-xs text-zinc-500">Lobby unavailable</span> : null}
+    <section className="rooms-shell">
+      <div className="rooms-status">
+        {failed ? <span>Lobby unavailable</span> : <span>{gameId ? "Currently active rooms" : "Live PartyKit rooms"}</span>}
       </div>
       {rooms.length === 0 ? (
-        <p className="mt-4 text-sm text-zinc-400">No active rooms - create one!</p>
+        <p className="empty-rooms">No active rooms - create one.</p>
       ) : (
-        <div className="mt-4 divide-y divide-white/10 rounded-md border border-white/10">
-          {rooms.map((room) => (
-            <div key={`${room.game}:${room.code}`} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 px-3 py-2 text-sm">
-              <span className="font-mono text-white">{room.code.toUpperCase()}</span>
-              <span className="text-zinc-300">{Math.min(room.players, 2)}/2</span>
+        <div className="rooms">
+          {rooms.map((room) => {
+            const game = gameMeta(room.game);
+            const code = room.code.toUpperCase();
+            return (
               <button
+                key={`${room.game}:${room.code}`}
                 type="button"
-                onClick={() => router.push(`/games/${gameId}/${room.code.toUpperCase()}`)}
-                className="rounded-md border border-cyan-300/40 px-3 py-1.5 font-semibold text-cyan-200 hover:bg-cyan-300/10"
+                className="room"
+                style={{ "--tint": game.accent } as CSSProperties}
+                onClick={() => router.push(`/games/${room.game}/${code}`)}
               >
-                Join
+                <span className="room-l">
+                  <span className="game-name"><span className="dot" />{game.name}</span>
+                  <span className="ppl">{Math.min(room.players, 2)}/2 players · {room.started ? "in progress" : "waiting"}</span>
+                </span>
+                <span className="code">{code}</span>
               </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
   );
+}
+
+function gameMeta(gameId: string) {
+  return games.find((game) => game.id === gameId) || { name: gameId, accent: "#d8ff5b" };
 }
